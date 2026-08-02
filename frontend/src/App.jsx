@@ -14,6 +14,11 @@ export default function App() {
   const [showLogsModal, setShowLogsModal] = useState(false);
   const [syncLogs, setSyncLogs] = useState([]);
 
+  // Consolidated portfolio state
+  const [consolidatedData, setConsolidatedData] = useState({ summary: {}, items: [] });
+  const [selectedAccountIds, setSelectedAccountIds] = useState([]);
+  const [consolidatedLoading, setConsolidatedLoading] = useState(false);
+
   // OCR Verification Modal state
   const [verificationModal, setVerificationModal] = useState({
     isOpen: false,
@@ -57,10 +62,35 @@ export default function App() {
     }
   };
 
+  const fetchConsolidatedData = async () => {
+    setConsolidatedLoading(true);
+    try {
+      let url = '/api/consolidated-portfolio';
+      if (selectedAccountIds.length > 0) {
+        url += `?account_ids=${selectedAccountIds.join(',')}`;
+      }
+      const res = await fetch(url);
+      if (res.ok) {
+        const data = await res.json();
+        setConsolidatedData(data);
+      }
+    } catch (e) {
+      console.error("Error fetching consolidated portfolio:", e);
+    } finally {
+      setConsolidatedLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchAccounts();
     fetchTargetAllocations();
   }, []);
+
+  useEffect(() => {
+    if (activeTab === 'consolidated') {
+      fetchConsolidatedData();
+    }
+  }, [activeTab, selectedAccountIds]);
 
   const handleAddAccount = async (newAccount) => {
     try {
@@ -71,6 +101,7 @@ export default function App() {
       });
       if (res.ok) {
         await fetchAccounts();
+        if (activeTab === 'consolidated') fetchConsolidatedData();
       }
     } catch (e) {
       console.error("Error adding account:", e);
@@ -86,6 +117,7 @@ export default function App() {
       });
       if (res.ok) {
         await fetchAccounts();
+        if (activeTab === 'consolidated') fetchConsolidatedData();
       }
     } catch (e) {
       console.error("Error updating account:", e);
@@ -97,6 +129,7 @@ export default function App() {
       const res = await fetch(`/api/accounts/${accountId}`, { method: 'DELETE' });
       if (res.ok) {
         await fetchAccounts();
+        if (activeTab === 'consolidated') fetchConsolidatedData();
       }
     } catch (e) {
       console.error("Error deleting account:", e);
@@ -149,6 +182,7 @@ export default function App() {
       if (res.ok) {
         setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null });
         await fetchAccounts();
+        if (activeTab === 'consolidated') fetchConsolidatedData();
       }
     } catch (e) {
       console.error("Error saving verified holdings:", e);
@@ -195,7 +229,15 @@ export default function App() {
       />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
-        {activeTab === 'consolidated' && <ConsolidatedPortfolio />}
+        {activeTab === 'consolidated' && (
+          <ConsolidatedPortfolio
+            portfolioData={consolidatedData}
+            accounts={accounts}
+            selectedAccountIds={selectedAccountIds}
+            setSelectedAccountIds={setSelectedAccountIds}
+            loading={consolidatedLoading}
+          />
+        )}
         {activeTab === 'accounts-summary' && <AccountDetailView accounts={accounts} />}
         {activeTab === 'account-ingestion' && (
           <AccountsView
