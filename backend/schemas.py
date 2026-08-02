@@ -58,3 +58,5 @@ class TargetAllocationResponse(TargetAllocationBase):
 class VerifyHoldingsRequest(BaseModel):
     account_id: str
     holdings: List[HoldingBase]
+
+VerifySaveRequest = VerifyHoldingsRequest

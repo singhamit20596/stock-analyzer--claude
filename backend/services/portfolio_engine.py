@@ -33,12 +33,12 @@ class PortfolioAggregator:
                 symbol_map[symbol]["current_price"] = float(h.current_price)
 
             account_name = acc.name if acc else "Unknown"
-            broker = acc.broker if acc else "Manual"
+            currency_type = acc.currency_type if acc else "IND"
 
             symbol_map[symbol]["accounts_breakdown"].append({
                 "account_id": h.account_id,
                 "account_name": account_name,
-                "broker": broker,
+                "currency_type": currency_type,
                 "quantity": qty,
                 "avg_buy_price": buy_price,
                 "invested": invested,
