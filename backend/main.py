@@ -4,7 +4,6 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import os
-import io
 
 from database import engine, get_db, Base
 import models
@@ -30,6 +29,8 @@ def read_root():
         return FileResponse(index_file)
     return {"message": "Stocks Analyzer API is running."}
 
+# --- ACCOUNT MANAGEMENT ENDPOINTS ---
+
 @app.get("/api/accounts", response_model=List[schemas.AccountResponse])
 def get_accounts(db: Session = Depends(get_db)):
     return db.query(models.Account).all()
@@ -37,27 +38,28 @@ def get_accounts(db: Session = Depends(get_db)):
 @app.post("/api/accounts", response_model=schemas.AccountResponse)
 def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)):
     db_account = models.Account(
-        name=account.name,
-        broker=account.broker,
-        sync_method=account.sync_method or "IMAGE_OCR",
+        name=account.name.strip(),
         currency_type=account.currency_type or "IND"
     )
     db.add(db_account)
     db.commit()
     db.refresh(db_account)
-
-    if account.credentials:
-        for k, v in account.credentials.items():
-            if v:
-                cred = models.AccountCredential(
-                    account_id=db_account.id,
-                    key_name=k,
-                    value=v
-                )
-                db.add(cred)
-        db.commit()
-
     return db_account
+
+@app.put("/api/accounts/{account_id}", response_model=schemas.AccountResponse)
+def update_account(account_id: str, update_data: schemas.AccountUpdate, db: Session = Depends(get_db)):
+    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if update_data.name is not None and update_data.name.strip():
+        acc.name = update_data.name.strip()
+    if update_data.currency_type is not None:
+        acc.currency_type = update_data.currency_type
+
+    db.commit()
+    db.refresh(acc)
+    return acc
 
 @app.delete("/api/accounts/{account_id}")
 def delete_account(account_id: str, db: Session = Depends(get_db)):
@@ -67,6 +69,8 @@ def delete_account(account_id: str, db: Session = Depends(get_db)):
     db.delete(account)
     db.commit()
     return {"message": "Account deleted successfully"}
+
+# --- ACCOUNT DETAIL & METRICS ENDPOINT ---
 
 @app.get("/api/accounts/{account_id}/detail")
 def get_single_account_detail(account_id: str, db: Session = Depends(get_db)):
@@ -106,8 +110,7 @@ def get_single_account_detail(account_id: str, db: Session = Depends(get_db)):
             "invested_value": round(invested_val, 2),
             "current_value": round(current_val, 2),
             "pnl": round(pnl_val, 2),
-            "pnl_percent": round(pnl_pct, 2),
-            "is_user_verified": h.is_user_verified
+            "pnl_percent": round(pnl_pct, 2)
         }
 
         if is_us_account:
@@ -139,12 +142,13 @@ def get_single_account_detail(account_id: str, db: Session = Depends(get_db)):
     return {
         "account_id": account.id,
         "account_name": account.name,
-        "broker": account.broker,
         "currency_type": account.currency_type or "IND",
         "last_synced_at": account.last_synced_at,
         "summary": summary_dict,
         "items": items
     }
+
+# --- HOLDING UPDATE ENDPOINT ---
 
 @app.put("/api/holdings/{holding_id}")
 def update_holding(holding_id: str, holding_update: schemas.HoldingUpdate, db: Session = Depends(get_db)):
@@ -162,25 +166,24 @@ def update_holding(holding_id: str, holding_update: schemas.HoldingUpdate, db: S
         h.avg_buy_price = holding_update.avg_buy_price
     if holding_update.current_price is not None:
         h.current_price = holding_update.current_price
-    if holding_update.is_user_verified is not None:
-        h.is_user_verified = holding_update.is_user_verified
 
     db.commit()
     db.refresh(h)
     return {"message": "Holding updated successfully", "holding": h}
 
+# --- OCR SCREENSHOT UPLOAD & INGESTION ---
+
 @app.post("/api/upload-ocr-images")
 async def upload_ocr_images(
     files: List[UploadFile] = File(...),
     account_id: Optional[str] = Query(None),
-    broker_hint: Optional[str] = Query("GROWW"),
     db: Session = Depends(get_db)
 ):
     all_raw_holdings = []
     
     for f in files:
         contents = await f.read()
-        extracted = PortfolioOCREngine.process_image(contents, broker_hint=broker_hint)
+        extracted = PortfolioOCREngine.process_image(contents)
         if extracted:
             all_raw_holdings.extend(extracted)
 
@@ -264,6 +267,8 @@ def verify_and_save_holdings(
 
     return {"message": "Holdings saved successfully", "count": len(request.holdings)}
 
+# --- CONSOLIDATED PORTFOLIO & REBALANCER ---
+
 @app.get("/api/portfolio/consolidated")
 def get_consolidated_portfolio(db: Session = Depends(get_db)):
     accounts = db.query(models.Account).all()
@@ -273,14 +278,12 @@ def get_consolidated_portfolio(db: Session = Depends(get_db)):
     live_prices = fetch_live_prices_batch(symbols) if symbols else {}
     usd_inr_rate = fetch_usd_to_inr_rate()
 
-    # Convert US Stock holdings to INR for consolidated portfolio calculation
     updated_holdings = []
     for h in holdings:
         acc = db.query(models.Account).filter(models.Account.id == h.account_id).first()
         is_us = (acc and acc.currency_type == "US")
         raw_price = live_prices.get(h.symbol) or live_prices.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
         
-        # If US account, convert USD price & avg price to INR
         if is_us:
             h.current_price = raw_price * usd_inr_rate
         else:

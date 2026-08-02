@@ -8,17 +8,18 @@ import SyncLogsModal from './components/SyncLogsModal';
 import VerificationModal from './components/VerificationModal';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('portfolio');
+  const [activeTab, setActiveTab] = useState('consolidated');
   const [accounts, setAccounts] = useState([]);
-  const [selectedAccountIds, setSelectedAccountIds] = useState([]);
-  const [portfolioData, setPortfolioData] = useState({ summary: {}, items: [] });
-  const [rebalanceData, setRebalanceData] = useState({ summary: {}, matrix: [] });
   const [targetAllocations, setTargetAllocations] = useState([]);
+  const [showLogsModal, setShowLogsModal] = useState(false);
   const [syncLogs, setSyncLogs] = useState([]);
-  
-  const [previewData, setPreviewData] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [syncing, setSyncing] = useState(false);
+
+  // OCR Verification Modal state
+  const [verificationModal, setVerificationModal] = useState({
+    isOpen: false,
+    parsedHoldings: [],
+    targetAccountId: null
+  });
 
   const fetchAccounts = async () => {
     try {
@@ -32,36 +33,7 @@ export default function App() {
     }
   };
 
-  const fetchPortfolio = async () => {
-    setLoading(true);
-    try {
-      const query = selectedAccountIds.length > 0 ? `?account_ids=${selectedAccountIds.join(',')}` : '';
-      const res = await fetch(`/api/portfolio/consolidated${query}`);
-      if (res.ok) {
-        const data = await res.json();
-        setPortfolioData(data);
-      }
-    } catch (e) {
-      console.error("Error fetching portfolio:", e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const fetchRebalance = async () => {
-    try {
-      const query = selectedAccountIds.length > 0 ? `?account_ids=${selectedAccountIds.join(',')}` : '';
-      const res = await fetch(`/api/rebalance${query}`);
-      if (res.ok) {
-        const data = await res.json();
-        setRebalanceData(data);
-      }
-    } catch (e) {
-      console.error("Error fetching rebalance data:", e);
-    }
-  };
-
-  const fetchTargets = async () => {
+  const fetchTargetAllocations = async () => {
     try {
       const res = await fetch('/api/target-allocations');
       if (res.ok) {
@@ -69,7 +41,7 @@ export default function App() {
         setTargetAllocations(data);
       }
     } catch (e) {
-      console.error("Error fetching targets:", e);
+      console.error("Error fetching target allocations:", e);
     }
   };
 
@@ -87,35 +59,15 @@ export default function App() {
 
   useEffect(() => {
     fetchAccounts();
-    fetchTargets();
-    fetchSyncLogs();
+    fetchTargetAllocations();
   }, []);
 
-  useEffect(() => {
-    fetchPortfolio();
-    fetchRebalance();
-  }, [selectedAccountIds]);
-
-  const handleSyncNow = async () => {
-    setSyncing(true);
-    try {
-      await fetch('/api/sync-now', { method: 'POST' });
-      await fetchPortfolio();
-      await fetchRebalance();
-      await fetchSyncLogs();
-    } catch (e) {
-      console.error("Sync error:", e);
-    } finally {
-      setSyncing(false);
-    }
-  };
-
-  const handleAddAccount = async (newAcc) => {
+  const handleAddAccount = async (newAccount) => {
     try {
       const res = await fetch('/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newAcc)
+        body: JSON.stringify(newAccount)
       });
       if (res.ok) {
         await fetchAccounts();
@@ -125,152 +77,162 @@ export default function App() {
     }
   };
 
-  const handleDeleteAccount = async (accId) => {
+  const handleUpdateAccount = async (accountId, updateData) => {
     try {
-      const res = await fetch(`/api/accounts/${accId}`, { method: 'DELETE' });
+      const res = await fetch(`/api/accounts/${accountId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateData)
+      });
       if (res.ok) {
         await fetchAccounts();
-        await fetchPortfolio();
-        await fetchRebalance();
+      }
+    } catch (e) {
+      console.error("Error updating account:", e);
+    }
+  };
+
+  const handleDeleteAccount = async (accountId) => {
+    try {
+      const res = await fetch(`/api/accounts/${accountId}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchAccounts();
       }
     } catch (e) {
       console.error("Error deleting account:", e);
     }
   };
 
-  const handleImageOCRUpload = async (files, accountId, brokerHint) => {
+  const handleImageOCRUpload = async (files, accountId) => {
     try {
       const formData = new FormData();
-      const fileArray = Array.isArray(files) ? files : [files];
-      
-      fileArray.forEach((file) => {
+      files.forEach((file) => {
         formData.append('files', file);
       });
+      
+      let queryUrl = '/api/upload-ocr-images';
+      if (accountId) {
+        queryUrl += `?account_id=${encodeURIComponent(accountId)}`;
+      }
 
-      if (accountId) formData.append('account_id', accountId);
-      if (brokerHint) formData.append('broker_hint', brokerHint);
-
-      const res = await fetch('/api/upload-ocr-images', {
+      const res = await fetch(queryUrl, {
         method: 'POST',
         body: formData
       });
 
       if (res.ok) {
-        const data = await res.json();
-        const acc = accounts.find(a => a.id === accountId);
-        setPreviewData({
-          account_id: accountId,
-          account_name: acc ? acc.name : 'Uploaded Screenshots',
-          broker: brokerHint || (acc ? acc.broker : 'GROWW'),
-          holdings: data.holdings,
-          warnings: data.warnings,
-          filenames: data.filenames
+        const result = await res.json();
+        setVerificationModal({
+          isOpen: true,
+          parsedHoldings: result.holdings || [],
+          targetAccountId: accountId
         });
+      } else {
+        alert("OCR parsing failed. Please check server logs.");
       }
     } catch (e) {
-      console.error("OCR Upload error:", e);
+      console.error("Error uploading OCR image:", e);
     }
   };
 
-  const handleConfirmVerification = async (accountId, holdings, strategy = 'OVERWRITE') => {
+  const handleSaveVerifiedHoldings = async (verifiedHoldings, targetAccId, strategy) => {
     try {
       const res = await fetch(`/api/verify-save-holdings?strategy=${strategy}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: accountId, holdings })
+        body: JSON.stringify({
+          account_id: targetAccId,
+          holdings: verifiedHoldings
+        })
       });
+
       if (res.ok) {
-        setPreviewData(null);
-        await fetchPortfolio();
-        await fetchRebalance();
+        setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null });
         await fetchAccounts();
-        await fetchSyncLogs();
       }
     } catch (e) {
-      console.error("Confirm save error:", e);
+      console.error("Error saving verified holdings:", e);
     }
   };
 
-  const handleSaveTargets = async (targets) => {
+  const handleSaveTargetAllocation = async (targetItem) => {
     try {
       const res = await fetch('/api/target-allocations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(targets)
+        body: JSON.stringify(targetItem)
       });
       if (res.ok) {
-        await fetchTargets();
-        await fetchRebalance();
+        await fetchTargetAllocations();
       }
     } catch (e) {
-      console.error("Save targets error:", e);
+      console.error("Error saving target allocation:", e);
     }
   };
 
+  const handleDeleteTargetAllocation = async (allocId) => {
+    try {
+      const res = await fetch(`/api/target-allocations/${allocId}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchTargetAllocations();
+      }
+    } catch (e) {
+      console.error("Error deleting target allocation:", e);
+    }
+  };
+
+  const openSyncLogs = () => {
+    fetchSyncLogs();
+    setShowLogsModal(true);
+  };
+
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans">
-      
-      {/* Navigation Header */}
+    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-16">
       <Navbar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
-        onSyncNow={handleSyncNow}
-        syncing={syncing}
+        onOpenLogs={openSyncLogs}
       />
 
-      {/* Main App Container */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pb-12">
-        {activeTab === 'portfolio' && (
-          <ConsolidatedPortfolio
-            portfolioData={portfolioData}
-            accounts={accounts}
-            selectedAccountIds={selectedAccountIds}
-            setSelectedAccountIds={setSelectedAccountIds}
-            loading={loading}
-          />
-        )}
-
-        {activeTab === 'account-detail' && (
-          <AccountDetailView accounts={accounts} />
-        )}
-
-        {activeTab === 'rebalance' && (
-          <RebalanceView
-            rebalanceData={rebalanceData}
-            targetAllocations={targetAllocations}
-            onSaveTargets={handleSaveTargets}
-            loading={loading}
-          />
-        )}
-
-        {activeTab === 'accounts' && (
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        {activeTab === 'consolidated' && <ConsolidatedPortfolio />}
+        {activeTab === 'accounts-summary' && <AccountDetailView accounts={accounts} />}
+        {activeTab === 'account-ingestion' && (
           <AccountsView
             accounts={accounts}
             onAddAccount={handleAddAccount}
+            onUpdateAccount={handleUpdateAccount}
             onDeleteAccount={handleDeleteAccount}
             onImageOCRUpload={handleImageOCRUpload}
           />
         )}
-
-        {activeTab === 'logs' && (
-          <SyncLogsModal logs={syncLogs} />
+        {activeTab === 'rebalance' && (
+          <RebalanceView
+            targetAllocations={targetAllocations}
+            onSaveTargetAllocation={handleSaveTargetAllocation}
+            onDeleteTargetAllocation={handleDeleteTargetAllocation}
+          />
         )}
       </main>
 
-      {/* Verification Ingestion Review Modal */}
-      {previewData && (
+      {/* OCR Holdings Verification Modal */}
+      {verificationModal.isOpen && (
         <VerificationModal
-          previewData={previewData}
-          onClose={() => setPreviewData(null)}
-          onConfirm={handleConfirmVerification}
+          accounts={accounts}
+          initialHoldings={verificationModal.parsedHoldings}
+          targetAccountId={verificationModal.targetAccountId}
+          onClose={() => setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null })}
+          onSave={handleSaveVerifiedHoldings}
         />
       )}
 
-      {/* Footer */}
-      <footer className="border-t border-slate-900 py-4 text-center text-xs text-slate-500">
-        Stocks Analyzer • Multi-Broker Portfolio Aggregator & Rebalancer Engine
-      </footer>
-
+      {/* Sync Logs Drawer */}
+      {showLogsModal && (
+        <SyncLogsModal
+          logs={syncLogs}
+          onClose={() => setShowLogsModal(false)}
+        />
+      )}
     </div>
   );
 }

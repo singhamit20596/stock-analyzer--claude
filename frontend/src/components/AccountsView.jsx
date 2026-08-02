@@ -1,27 +1,65 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Trash2, UserCheck, Image, CheckCircle, FileText, Layers, ShieldCheck, DollarSign, Coins } from 'lucide-react';
+import { Plus, Upload, Trash2, Edit2, UserCheck, Image, ShieldCheck, DollarSign, Coins, Layers, AlertTriangle, X, Check } from 'lucide-react';
 
-export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, onImageOCRUpload }) {
+export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, onDeleteAccount, onImageOCRUpload }) {
   const [newAccName, setNewAccName] = useState('');
-  const [newBroker, setNewBroker] = useState('INDMONEY');
   const [newCurrencyType, setNewCurrencyType] = useState('IND');
   const [selectedAccId, setSelectedAccId] = useState('');
-  const [brokerHint, setBrokerHint] = useState('INDMONEY');
 
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
+
+  // Confirmation Modal States
+  const [confirmModal, setConfirmModal] = useState({
+    isOpen: false,
+    type: null, // 'DELETE' or 'EDIT'
+    account: null,
+    editName: '',
+    editCurrency: 'IND'
+  });
 
   const handleAddSubmit = (e) => {
     e.preventDefault();
     if (!newAccName.trim()) return;
     onAddAccount({
       name: newAccName.trim(),
-      broker: newBroker,
-      currency_type: newCurrencyType,
-      sync_method: 'IMAGE_OCR'
+      currency_type: newCurrencyType
     });
     setNewAccName('');
+  };
+
+  const openDeleteConfirmation = (acc) => {
+    setConfirmModal({
+      isOpen: true,
+      type: 'DELETE',
+      account: acc,
+      editName: acc.name,
+      editCurrency: acc.currency_type
+    });
+  };
+
+  const openEditConfirmation = (acc) => {
+    setConfirmModal({
+      isOpen: true,
+      type: 'EDIT',
+      account: acc,
+      editName: acc.name,
+      editCurrency: acc.currency_type
+    });
+  };
+
+  const handleConfirmAction = () => {
+    if (!confirmModal.account) return;
+    if (confirmModal.type === 'DELETE') {
+      onDeleteAccount(confirmModal.account.id);
+    } else if (confirmModal.type === 'EDIT') {
+      onUpdateAccount(confirmModal.account.id, {
+        name: confirmModal.editName.trim(),
+        currency_type: confirmModal.editCurrency
+      });
+    }
+    setConfirmModal({ isOpen: false, type: null, account: null, editName: '', editCurrency: 'IND' });
   };
 
   const handleFileChange = (e) => {
@@ -54,7 +92,7 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
     if (selectedFiles.length === 0) return;
     setUploading(true);
     try {
-      await onImageOCRUpload(selectedFiles, selectedAccId || null, brokerHint);
+      await onImageOCRUpload(selectedFiles, selectedAccId || null);
     } catch (err) {
       console.error(err);
     } finally {
@@ -63,17 +101,91 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 relative">
       
-      {/* Column 1 & 2: Added Broker Accounts List */}
+      {/* Confirmation Modal */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-panel max-w-md w-full p-6 rounded-2xl border border-slate-700 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+              <h3 className="text-base font-bold text-slate-100 flex items-center">
+                <AlertTriangle className={`w-5 h-5 mr-2 ${confirmModal.type === 'DELETE' ? 'text-rose-400' : 'text-amber-400'}`} />
+                {confirmModal.type === 'DELETE' ? 'Confirm Account Deletion' : 'Confirm Account Modification'}
+              </h3>
+              <button
+                onClick={() => setConfirmModal({ isOpen: false, type: null, account: null, editName: '', editCurrency: 'IND' })}
+                className="text-slate-400 hover:text-slate-200 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {confirmModal.type === 'DELETE' ? (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">
+                  Are you sure you want to permanently delete account <span className="font-bold text-white">"{confirmModal.account?.name}"</span>?
+                </p>
+                <p className="text-[11px] text-rose-400 bg-rose-500/10 p-3 rounded-xl border border-rose-500/20">
+                  ⚠️ Warning: All holdings and historical data linked to this account will be erased immediately.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-300">Update account details below:</p>
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-400 block mb-1">Account Name</label>
+                  <input
+                    type="text"
+                    value={confirmModal.editName}
+                    onChange={(e) => setConfirmModal({ ...confirmModal, editName: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div>
+                  <label className="text-[11px] font-semibold text-slate-400 block mb-1">Account Currency Type</label>
+                  <select
+                    value={confirmModal.editCurrency}
+                    onChange={(e) => setConfirmModal({ ...confirmModal, editCurrency: e.target.value })}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 font-bold focus:outline-none focus:border-indigo-500"
+                  >
+                    <option value="IND">🇮🇳 IND (₹ INR - Indian Stocks)</option>
+                    <option value="US">🇺🇸 US ($ USD - US Stocks)</option>
+                  </select>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end space-x-3 pt-3 border-t border-slate-800">
+              <button
+                onClick={() => setConfirmModal({ isOpen: false, type: null, account: null, editName: '', editCurrency: 'IND' })}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAction}
+                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all shadow-md ${
+                  confirmModal.type === 'DELETE'
+                    ? 'bg-rose-600 hover:bg-rose-500 text-white shadow-rose-600/30'
+                    : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/30'
+                }`}
+              >
+                {confirmModal.type === 'DELETE' ? 'Yes, Delete Account' : 'Save Changes'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Column 1 & 2: User Accounts List */}
       <div className="lg:col-span-2 space-y-6">
         <div className="glass-panel p-6 rounded-2xl border border-slate-800">
           <div className="flex justify-between items-center mb-6">
             <div>
               <h2 className="text-base font-bold text-slate-100 flex items-center">
-                <UserCheck className="w-5 h-5 mr-2 text-indigo-400" /> User Broker Accounts
+                <UserCheck className="w-5 h-5 mr-2 text-indigo-400" /> User Accounts
               </h2>
-              <p className="text-xs text-slate-400">Manage your connected portfolio accounts across US Stocks ($ USD) & Indian Stocks (₹ INR).</p>
+              <p className="text-xs text-slate-400">Manage your connected portfolio accounts (US Stocks & Indian Stocks).</p>
             </div>
             <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
               {accounts.length} Accounts Configured
@@ -88,9 +200,6 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
                   <div className="space-y-1">
                     <div className="flex items-center space-x-2">
                       <span className="text-sm font-bold text-slate-200">{acc.name}</span>
-                      <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-800 text-indigo-300 border border-slate-700">
-                        {acc.broker}
-                      </span>
                       <span className={`text-[10px] font-bold px-2 py-0.5 rounded flex items-center ${
                         isUS ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' : 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
                       }`}>
@@ -98,38 +207,44 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
                         {isUS ? 'US ($ USD)' : 'IND (₹ INR)'}
                       </span>
                     </div>
-                    <p className="text-[11px] text-slate-400 flex items-center">
-                      <ShieldCheck className="w-3 h-3 mr-1 text-emerald-400" />
-                      Plaintext Credential Storage • {acc.sync_method}
-                    </p>
                     <p className="text-[10px] text-slate-500">
                       Last Synced: {acc.last_synced_at ? new Date(acc.last_synced_at).toLocaleString() : 'Never'}
                     </p>
                   </div>
-                  <button
-                    onClick={() => onDeleteAccount(acc.id)}
-                    className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors"
-                    title="Delete Account"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
+
+                  <div className="flex items-center space-x-1.5">
+                    <button
+                      onClick={() => openEditConfirmation(acc)}
+                      className="p-1.5 rounded-lg bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 transition-colors"
+                      title="Edit Account"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => openDeleteConfirmation(acc)}
+                      className="p-1.5 rounded-lg bg-rose-500/10 text-rose-400 hover:bg-rose-500/20 transition-colors"
+                      title="Delete Account"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 </div>
               );
             })}
           </div>
         </div>
 
-        {/* Add New Account Form */}
+        {/* Minimal Add New Account Form */}
         <div className="glass-panel p-6 rounded-2xl border border-slate-800">
           <h3 className="text-sm font-bold text-slate-200 mb-4 flex items-center">
-            <Plus className="w-4 h-4 mr-1.5 text-emerald-400" /> Add New User Broker Account
+            <Plus className="w-4 h-4 mr-1.5 text-emerald-400" /> Create New Account
           </h3>
-          <form onSubmit={handleAddSubmit} className="grid grid-cols-1 sm:grid-cols-4 gap-4">
+          <form onSubmit={handleAddSubmit} className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label className="text-xs font-semibold text-slate-400 mb-1 block">Account Name</label>
               <input
                 type="text"
-                placeholder="e.g. Preeti - US Stocks"
+                placeholder="e.g. Preeti US Portfolio"
                 value={newAccName}
                 onChange={(e) => setNewAccName(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
@@ -147,25 +262,12 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
                 <option value="US">🇺🇸 US ($ USD - US Stocks)</option>
               </select>
             </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-400 mb-1 block">Broker Platform</label>
-              <select
-                value={newBroker}
-                onChange={(e) => setNewBroker(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
-              >
-                <option value="INDMONEY">INDmoney</option>
-                <option value="GROWW">Groww</option>
-                <option value="ZERODHA">Zerodha</option>
-                <option value="UPSTOX">Upstox</option>
-              </select>
-            </div>
             <div className="flex items-end">
               <button
                 type="submit"
                 className="w-full bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-semibold py-2 rounded-xl text-xs transition-all shadow-md shadow-indigo-600/30"
               >
-                Add Account
+                Create Account
               </button>
             </div>
           </form>
@@ -176,9 +278,9 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
       <div className="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
         <div>
           <h3 className="text-base font-bold text-slate-100 flex items-center">
-            <Upload className="w-5 h-5 mr-2 text-emerald-400" /> Multi-Screenshot OCR Upload
+            <Upload className="w-5 h-5 mr-2 text-emerald-400" /> Multi-Screenshot Ingestion
           </h3>
-          <p className="text-xs text-slate-400">Upload holdings screenshots for INDmoney (US Stocks) or Groww.</p>
+          <p className="text-xs text-slate-400">Upload portfolio holdings screenshots for automatic parsing.</p>
         </div>
 
         <form onSubmit={handleUploadSubmit} className="space-y-4">
@@ -189,26 +291,12 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
               onChange={(e) => setSelectedAccId(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
             >
-              <option value="">-- Create/Assign on Verification --</option>
+              <option value="">-- Assign to Account on Verification --</option>
               {accounts.map((acc) => (
                 <option key={acc.id} value={acc.id}>
-                  {acc.name} ({acc.broker} - {acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
+                  {acc.name} ({acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
                 </option>
               ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1 block">Broker Format</label>
-            <select
-              value={brokerHint}
-              onChange={(e) => setBrokerHint(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
-            >
-              <option value="INDMONEY">INDmoney (US Stocks & Indian Stocks App)</option>
-              <option value="GROWW">Groww (Web / Desktop Table & Mobile)</option>
-              <option value="ZERODHA">Zerodha (Kite Mobile)</option>
-              <option value="UPSTOX">Upstox</option>
             </select>
           </div>
 
@@ -242,7 +330,7 @@ export default function AccountsView({ accounts, onAddAccount, onDeleteAccount, 
               ) : (
                 <div>
                   <p className="text-xs font-semibold text-slate-200 font-bold">Click or Drag & Drop Screenshots</p>
-                  <p className="text-[10px] text-slate-400">PNG, JPG, WEBP • INDmoney US Stocks & Groww</p>
+                  <p className="text-[10px] text-slate-400">PNG, JPG, WEBP formats supported</p>
                 </div>
               )}
             </label>

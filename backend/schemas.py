@@ -4,16 +4,17 @@ from datetime import datetime
 
 class AccountBase(BaseModel):
     name: str
-    broker: str
-    sync_method: Optional[str] = "IMAGE_OCR"
     currency_type: Optional[str] = "IND"  # "IND" (₹ INR) or "US" ($ USD)
 
 class AccountCreate(AccountBase):
-    credentials: Optional[dict] = {}
+    pass
+
+class AccountUpdate(BaseModel):
+    name: Optional[str] = None
+    currency_type: Optional[str] = None
 
 class AccountResponse(AccountBase):
     id: str
-    is_active: bool
     created_at: datetime
     last_synced_at: Optional[datetime] = None
 
@@ -30,7 +31,6 @@ class HoldingBase(BaseModel):
 class HoldingResponse(HoldingBase):
     id: str
     account_id: str
-    is_user_verified: bool = False
     updated_at: datetime
 
     class Config:
@@ -42,7 +42,6 @@ class HoldingUpdate(BaseModel):
     quantity: Optional[float] = None
     avg_buy_price: Optional[float] = None
     current_price: Optional[float] = None
-    is_user_verified: Optional[bool] = None
 
 class TargetAllocationBase(BaseModel):
     symbol: str
@@ -55,10 +54,6 @@ class TargetAllocationResponse(TargetAllocationBase):
 
     class Config:
         from_attributes = True
-
-class OCRIngestRequest(BaseModel):
-    broker_hint: Optional[str] = "GROWW"
-    account_id: Optional[str] = None
 
 class VerifyHoldingsRequest(BaseModel):
     account_id: str
