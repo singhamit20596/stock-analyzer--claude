@@ -1,10 +1,23 @@
-import React, { useState } from 'react';
-import { CheckCircle2, AlertTriangle, Trash2, Plus, ShieldCheck, Layers, X } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { CheckCircle2, AlertTriangle, Trash2, Plus, X } from 'lucide-react';
 
-export default function VerificationModal({ previewData, onClose, onConfirm }) {
-  const [holdings, setHoldings] = useState(previewData.holdings || []);
-  const [selectedAccountId, setSelectedAccountId] = useState(previewData.account_id || '');
-  const [strategy, setStrategy] = useState('MERGE');
+export default function VerificationModal({ accounts, initialHoldings, targetAccountId, onClose, onSave }) {
+  const [holdings, setHoldings] = useState(initialHoldings || []);
+  const [selectedAccountId, setSelectedAccountId] = useState(targetAccountId || (accounts && accounts[0]?.id) || '');
+  const [strategy, setStrategy] = useState('OVERWRITE');
+
+  // Keep state synchronized whenever initialHoldings or targetAccountId props update
+  useEffect(() => {
+    setHoldings(initialHoldings || []);
+  }, [initialHoldings]);
+
+  useEffect(() => {
+    if (targetAccountId) {
+      setSelectedAccountId(targetAccountId);
+    }
+  }, [targetAccountId]);
+
+  const targetAccount = (accounts || []).find(a => a.id === selectedAccountId);
 
   const handleRowChange = (index, field, value) => {
     const updated = [...holdings];
@@ -24,19 +37,20 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
     ]);
   };
 
-  const handleSave = () => {
+  const handleConfirmSave = () => {
     if (!selectedAccountId) {
       alert("Please select a target Broker Account to save these extracted holdings to.");
       return;
     }
-    onConfirm(selectedAccountId, holdings, strategy);
+    onSave(holdings, selectedAccountId, strategy);
   };
 
   const totalExtractedValue = holdings.reduce((sum, item) => sum + (item.quantity * item.avg_buy_price), 0);
+  const currencySymbol = targetAccount?.currency_type === 'US' ? '$' : '₹';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-      <div className="glass-panel w-full max-w-4xl max-h-[90vh] rounded-2xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+      <div className="glass-panel w-full max-w-4xl max-h-[90vh] rounded-2xl border border-slate-800 shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
         
         {/* Header */}
         <div className="p-5 border-b border-slate-800 bg-slate-900/80 flex justify-between items-center">
@@ -45,15 +59,10 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
               <CheckCircle2 className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="text-base font-bold text-slate-100 flex items-center">
-                Review Extracted Stock Holdings
-                {previewData.filenames && previewData.filenames.length > 1 && (
-                  <span className="ml-2 text-xs font-bold px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center">
-                    <Layers className="w-3 h-3 mr-1" /> {previewData.filenames.length} Screenshots
-                  </span>
-                )}
+              <h2 className="text-base font-bold text-slate-100">
+                Review Extracted Stock Holdings ({holdings.length} Stocks Parsed)
               </h2>
-              <p className="text-xs text-slate-400">Verify and edit parsed quantity and average cost price before saving to your portfolio database.</p>
+              <p className="text-xs text-slate-400">Verify and edit parsed quantities and cost prices before saving to your account.</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800">
@@ -61,29 +70,21 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
           </button>
         </div>
 
-        {/* Warnings Banner if any */}
-        {previewData.warnings && previewData.warnings.length > 0 && (
-          <div className="mx-6 mt-4 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-start space-x-2 text-xs text-amber-300">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
-            <div>
-              <p className="font-bold">Extraction & Deduplication Notes:</p>
-              <ul className="list-disc list-inside text-[11px] text-amber-200/90 space-y-0.5">
-                {previewData.warnings.map((w, i) => <li key={i}>{w}</li>)}
-              </ul>
-            </div>
-          </div>
-        )}
-
         {/* Form Controls */}
         <div className="p-6 pb-2 grid grid-cols-1 sm:grid-cols-3 gap-4 text-xs">
           <div>
             <label className="font-semibold text-slate-400 mb-1 block">1. Target Account</label>
-            <input
-              type="text"
-              readOnly
-              value={previewData.account_name || 'Selected Account'}
-              className="w-full bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 font-bold"
-            />
+            <select
+              value={selectedAccountId}
+              onChange={(e) => setSelectedAccountId(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-100 font-bold focus:outline-none focus:border-indigo-500"
+            >
+              {(accounts || []).map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.name} ({acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
+                </option>
+              ))}
+            </select>
           </div>
 
           <div>
@@ -93,15 +94,15 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
               onChange={(e) => setStrategy(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
             >
-              <option value="MERGE">MERGE (Smart Weighted Avg Cost Price)</option>
               <option value="OVERWRITE">OVERWRITE (Replace Account Holdings)</option>
+              <option value="MERGE">MERGE (Smart Weighted Avg Cost Price)</option>
             </select>
           </div>
 
           <div>
             <label className="font-semibold text-slate-400 mb-1 block">3. Total Parsed Value</label>
             <div className="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 text-emerald-400 font-bold text-sm">
-              ₹{totalExtractedValue.toLocaleString('en-IN')}
+              {currencySymbol}{totalExtractedValue.toLocaleString(targetAccount?.currency_type === 'US' ? 'en-US' : 'en-IN')}
             </div>
           </div>
         </div>
@@ -115,8 +116,8 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
                   <th className="py-3 px-4">Symbol</th>
                   <th className="py-3 px-4">Company Name</th>
                   <th className="py-3 px-4 text-right">Quantity</th>
-                  <th className="py-3 px-4 text-right">Avg Price (₹)</th>
-                  <th className="py-3 px-4 text-right">Market Price (₹)</th>
+                  <th className="py-3 px-4 text-right">Avg Price ({currencySymbol})</th>
+                  <th className="py-3 px-4 text-right">Market Price ({currencySymbol})</th>
                   <th className="py-3 px-4 text-center">Action</th>
                 </tr>
               </thead>
@@ -193,7 +194,7 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
         {/* Footer */}
         <div className="p-4 border-t border-slate-800 bg-slate-900/80 flex justify-between items-center">
           <span className="text-xs text-slate-400">
-            Total {holdings.length} stocks ready to save.
+            Total {holdings.length} stock line(s) ready to save.
           </span>
           <div className="flex items-center space-x-3">
             <button
@@ -203,7 +204,7 @@ export default function VerificationModal({ previewData, onClose, onConfirm }) {
               Cancel
             </button>
             <button
-              onClick={handleSave}
+              onClick={handleConfirmSave}
               className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 text-xs font-bold shadow-lg shadow-emerald-500/20"
             >
               Confirm & Save to Portfolio

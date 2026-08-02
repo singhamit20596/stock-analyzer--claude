@@ -46,7 +46,8 @@ def get_accounts(db: Session = Depends(get_db)):
 def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)):
     new_acc = models.Account(
         name=account.name,
-        currency_type=account.currency_type or "IND"
+        currency_type=account.currency_type or "IND",
+        wallet_balance=account.wallet_balance or 0.0
     )
     db.add(new_acc)
     db.commit()
@@ -59,10 +60,12 @@ def update_account(account_id: str, update_data: schemas.AccountUpdate, db: Sess
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
     
-    if update_data.name:
+    if update_data.name is not None:
         acc.name = update_data.name
-    if update_data.currency_type:
+    if update_data.currency_type is not None:
         acc.currency_type = update_data.currency_type
+    if update_data.wallet_balance is not None:
+        acc.wallet_balance = update_data.wallet_balance
     
     db.commit()
     db.refresh(acc)
@@ -169,10 +172,18 @@ def get_account_detail(account_id: str, db: Session = Depends(get_db)):
         summary["current_value_inr"] = round(tot_current * usd_inr_rate, 2)
         summary["pnl_inr"] = round(tot_pnl * usd_inr_rate, 2)
 
+    wallet_bal = acc.wallet_balance or 0.0
+    if is_us:
+        summary["wallet_balance"] = round(wallet_bal, 2)
+        summary["wallet_balance_inr"] = round(wallet_bal * usd_inr_rate, 2)
+    else:
+        summary["wallet_balance"] = round(wallet_bal, 2)
+
     return {
         "account_id": acc.id,
         "account_name": acc.name,
         "currency_type": acc.currency_type,
+        "wallet_balance": round(wallet_bal, 2),
         "last_synced_at": acc.last_synced_at,
         "summary": summary,
         "items": items

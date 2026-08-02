@@ -16,6 +16,8 @@ class Account(Base):
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     last_synced_at = Column(DateTime, nullable=True)
 
+    wallet_balance = Column(Float, default=0.0, nullable=True)
+
     holdings = relationship("Holding", back_populates="account", cascade="all, delete-orphan")
 
 

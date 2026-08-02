@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft, Upload, Image, Layers, X, CheckCircle2 } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft, Upload, Image, Layers, X, CheckCircle2, PiggyBank, ChevronRight } from 'lucide-react';
+
+// Update type options
+const UPDATE_TYPES = {
+  HOLDINGS: 'holdings',
+  WALLET: 'wallet',
+  BOTH: 'both',
+};
 
 export default function AccountDetailView({ accounts, onImageOCRUpload }) {
   const [selectedAccountId, setSelectedAccountId] = useState('');
@@ -7,8 +14,15 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
   const [loading, setLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Upload Holdings Modal State
-  const [showUploadModal, setShowUploadModal] = useState(false);
+  // Update Modal Step State
+  // step: 'select_type' | 'wallet_input' | 'screenshot_upload'
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [updateStep, setUpdateStep] = useState('select_type');
+  const [updateType, setUpdateType] = useState(null);
+  const [walletBalanceInput, setWalletBalanceInput] = useState('');
+  const [savingWallet, setSavingWallet] = useState(false);
+
+  // Screenshot upload state
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [dragActive, setDragActive] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -41,6 +55,68 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
     }
   }, [selectedAccountId]);
 
+  // --- Modal Helpers ---
+  const openUpdateModal = () => {
+    setUpdateStep('select_type');
+    setUpdateType(null);
+    setWalletBalanceInput('');
+    setSelectedFiles([]);
+    setShowUpdateModal(true);
+  };
+
+  const closeUpdateModal = () => {
+    setShowUpdateModal(false);
+    setUpdateStep('select_type');
+    setUpdateType(null);
+    setWalletBalanceInput('');
+    setSelectedFiles([]);
+  };
+
+  const handleUpdateTypeSelect = (type) => {
+    setUpdateType(type);
+    if (type === UPDATE_TYPES.HOLDINGS) {
+      setUpdateStep('screenshot_upload');
+    } else if (type === UPDATE_TYPES.WALLET) {
+      setUpdateStep('wallet_input');
+    } else if (type === UPDATE_TYPES.BOTH) {
+      setUpdateStep('wallet_input');
+    }
+  };
+
+  // --- Wallet Balance Save ---
+  const handleSaveWalletBalance = async () => {
+    const balance = parseFloat(walletBalanceInput);
+    if (isNaN(balance) || balance < 0) {
+      alert("Please enter a valid wallet balance (0 or greater).");
+      return;
+    }
+    setSavingWallet(true);
+    try {
+      const res = await fetch(`/api/accounts/${selectedAccountId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet_balance: balance })
+      });
+      if (res.ok) {
+        if (updateType === UPDATE_TYPES.BOTH) {
+          // Proceed to screenshot upload step
+          setUpdateStep('screenshot_upload');
+        } else {
+          // Done — close modal and refresh
+          closeUpdateModal();
+          await fetchAccountDetail(selectedAccountId);
+          setToastMessage(`Wallet balance updated to ${currencySymbol}${balance.toLocaleString()}`);
+          setTimeout(() => setToastMessage(null), 5000);
+        }
+      }
+    } catch (e) {
+      console.error("Error updating wallet balance:", e);
+    } finally {
+      setSavingWallet(false);
+    }
+  };
+
+  // --- Screenshot Upload ---
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files.length > 0) {
       setSelectedFiles(Array.from(e.target.files));
@@ -72,8 +148,7 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
     setUploading(true);
     try {
       await onImageOCRUpload(selectedFiles, selectedAccountId);
-      setShowUploadModal(false);
-      setSelectedFiles([]);
+      closeUpdateModal();
       setToastMessage("Holdings upload processed! Verify and save your parsed holdings.");
       setTimeout(() => setToastMessage(null), 5000);
     } catch (err) {
@@ -93,16 +168,19 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
     );
   }
 
-  const { summary, items, account_name, currency_type } = accountData || {
-    summary: { invested_value: 0, current_value: 0, holding_count: 0, pnl: 0, pnl_percent: 0 },
+  const { summary, items, account_name, currency_type, wallet_balance } = accountData || {
+    summary: { invested_value: 0, current_value: 0, holding_count: 0, pnl: 0, pnl_percent: 0, wallet_balance: 0 },
     items: [],
-    currency_type: 'IND'
+    currency_type: 'IND',
+    wallet_balance: 0
   };
 
   const isUSAccount = (currency_type === 'US');
   const currencySymbol = isUSAccount ? '$' : '₹';
   const usdInrRate = summary.usd_to_inr_rate || 86.50;
   const isPositivePnl = (summary.pnl || 0) >= 0;
+  const walletBal = wallet_balance ?? summary.wallet_balance ?? 0;
+  const hasWalletBalance = walletBal > 0;
 
   return (
     <div className="space-y-6 relative">
@@ -119,7 +197,7 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
           </button>
         </div>
       )}
-      
+
       {/* Account Selector & Header Action Bar */}
       <div className="glass-panel p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
@@ -144,7 +222,7 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
           </div>
         )}
 
-        {/* Account Selector + Refresh + Update Holdings Action Buttons */}
+        {/* Account Selector + Refresh + Update Action Buttons */}
         <div className="flex items-center space-x-2.5 w-full md:w-auto">
           <label className="text-xs font-semibold text-slate-400 shrink-0">Account:</label>
           <select
@@ -169,101 +247,203 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
 
-          {/* Update Holdings Button right next to Refresh Live Prices */}
+          {/* Update Button — triggers the multi-step modal */}
           <button
-            onClick={() => setShowUploadModal(true)}
+            onClick={openUpdateModal}
             className="px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30 shrink-0 flex items-center space-x-1.5 transition-all shadow-md shadow-emerald-500/10"
-            title="Upload Screenshots to Update Holdings"
+            title="Update Holdings or Wallet Balance"
           >
             <Upload className="w-4 h-4 text-emerald-400" />
-            <span className="hidden sm:inline">Update Holdings</span>
+            <span className="hidden sm:inline">Update</span>
           </button>
         </div>
       </div>
 
-      {/* Upload Holdings Modal */}
-      {showUploadModal && (
+      {/* Multi-Step Update Modal */}
+      {showUpdateModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="glass-panel max-w-lg w-full p-6 rounded-2xl border border-slate-700 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
+
+            {/* Modal Header */}
             <div className="flex justify-between items-center pb-3 border-b border-slate-800">
               <div>
                 <h3 className="text-base font-bold text-slate-100 flex items-center">
-                  <Upload className="w-5 h-5 mr-2 text-emerald-400" /> Update Holdings via Screenshot
+                  <Upload className="w-5 h-5 mr-2 text-emerald-400" />
+                  Update Account — <span className="text-indigo-300 ml-1">{account_name}</span>
                 </h3>
-                <p className="text-xs text-slate-400 mt-0.5">Uploading for <span className="font-bold text-slate-200">{account_name}</span></p>
+                <div className="flex items-center space-x-2 mt-1.5 text-[10px] text-slate-400 font-semibold">
+                  {['select_type', 'wallet_input', 'screenshot_upload'].map((s, i) => {
+                    const stepLabels = { select_type: 'Choose Type', wallet_input: 'Wallet Balance', screenshot_upload: 'Upload Screenshots' };
+                    const active = updateStep === s;
+                    const done = (updateStep === 'wallet_input' && s === 'select_type') ||
+                                 (updateStep === 'screenshot_upload' && (s === 'select_type' || s === 'wallet_input'));
+                    return (
+                      <React.Fragment key={s}>
+                        <span className={`px-2 py-0.5 rounded-md font-bold ${active ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-500/30' : done ? 'text-emerald-400' : 'text-slate-500'}`}>
+                          {done ? '✓ ' : ''}{stepLabels[s]}
+                        </span>
+                        {i < 2 && <ChevronRight className="w-3 h-3 text-slate-600" />}
+                      </React.Fragment>
+                    );
+                  })}
+                </div>
               </div>
-              <button
-                onClick={() => setShowUploadModal(false)}
-                className="text-slate-400 hover:text-slate-200 p-1 rounded-lg"
-              >
+              <button onClick={closeUpdateModal} className="text-slate-400 hover:text-slate-200 p-1 rounded-lg">
                 <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleUploadSubmit} className="space-y-4">
-              {/* Drag & Drop Multi-File Zone */}
-              <div
-                onDragEnter={handleDrag}
-                onDragOver={handleDrag}
-                onDragLeave={handleDrag}
-                onDrop={handleDrop}
-                className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
-                  dragActive ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-800 hover:border-slate-700 bg-slate-900/60'
-                }`}
-              >
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  onChange={handleFileChange}
-                  className="hidden"
-                  id="account-detail-screenshot-input"
-                />
-                <label htmlFor="account-detail-screenshot-input" className="cursor-pointer space-y-2 block">
-                  <Image className="w-8 h-8 text-indigo-400 mx-auto" />
-                  {selectedFiles.length > 0 ? (
+            {/* STEP 1: Select Update Type */}
+            {updateStep === 'select_type' && (
+              <div className="space-y-3">
+                <p className="text-xs text-slate-400">What would you like to update for <span className="font-bold text-slate-200">{account_name}</span>?</p>
+                {[
+                  { type: UPDATE_TYPES.HOLDINGS, icon: <Layers className="w-5 h-5 text-indigo-400" />, label: 'Holdings Only', desc: 'Upload broker screenshot(s) to update stock positions' },
+                  { type: UPDATE_TYPES.WALLET, icon: <PiggyBank className="w-5 h-5 text-amber-400" />, label: 'Wallet Balance Only', desc: 'Enter your uninvested cash balance sitting in the broker' },
+                  { type: UPDATE_TYPES.BOTH, icon: <DollarSign className="w-5 h-5 text-emerald-400" />, label: 'Both — Wallet & Holdings', desc: 'First update wallet balance, then upload screenshots' },
+                ].map(({ type, icon, label, desc }) => (
+                  <button
+                    key={type}
+                    onClick={() => handleUpdateTypeSelect(type)}
+                    className="w-full flex items-center space-x-4 p-4 rounded-xl border border-slate-700 hover:border-indigo-500/50 hover:bg-indigo-500/5 transition-all text-left group"
+                  >
+                    <div className="p-2 rounded-lg bg-slate-800 group-hover:bg-slate-700 border border-slate-700 shrink-0">{icon}</div>
                     <div>
-                      <p className="text-xs font-bold text-emerald-400">{selectedFiles.length} Screenshot(s) Selected</p>
-                      <p className="text-[10px] text-slate-400 truncate max-w-[240px] mx-auto mt-1">
-                        {selectedFiles.map(f => f.name).join(', ')}
-                      </p>
+                      <p className="text-sm font-bold text-slate-100">{label}</p>
+                      <p className="text-xs text-slate-400 mt-0.5">{desc}</p>
                     </div>
-                  ) : (
-                    <div>
-                      <p className="text-xs font-bold text-slate-200">Click or Drag & Drop Screenshots</p>
-                      <p className="text-[10px] text-slate-400 mt-0.5">PNG, JPG, WEBP formats supported</p>
-                    </div>
-                  )}
-                </label>
+                    <ChevronRight className="w-4 h-4 text-slate-600 ml-auto shrink-0 group-hover:text-indigo-400" />
+                  </button>
+                ))}
               </div>
+            )}
 
-              <div className="flex justify-end space-x-3 pt-3 border-t border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setShowUploadModal(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={selectedFiles.length === 0 || uploading}
-                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-xs transition-all shadow-md shadow-emerald-500/20 disabled:opacity-50 flex items-center space-x-2"
-                >
-                  {uploading ? (
-                    <>
-                      <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
-                      <span>Parsing {selectedFiles.length} File(s)...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Layers className="w-4 h-4" />
-                      <span>Process & Update Holdings</span>
-                    </>
+            {/* STEP 2: Wallet Balance Input */}
+            {updateStep === 'wallet_input' && (
+              <div className="space-y-4">
+                <div className="flex items-center space-x-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
+                  <PiggyBank className="w-5 h-5 text-amber-400 shrink-0" />
+                  <p className="text-xs text-amber-200">Enter the uninvested cash balance currently sitting idle in your <span className="font-bold">{account_name}</span> broker account.</p>
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-400 block mb-1.5">
+                    Wallet / Cash Balance ({currencySymbol})
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-bold text-sm">{currencySymbol}</span>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      value={walletBalanceInput}
+                      onChange={(e) => setWalletBalanceInput(e.target.value)}
+                      placeholder="0.00"
+                      className="w-full bg-slate-900 border border-slate-700 rounded-xl pl-7 pr-4 py-3 text-slate-100 font-bold text-lg focus:outline-none focus:border-indigo-500"
+                      autoFocus
+                    />
+                  </div>
+                  {hasWalletBalance && (
+                    <p className="text-[11px] text-slate-500 mt-1">Current stored balance: {currencySymbol}{walletBal.toLocaleString()}</p>
                   )}
-                </button>
+                </div>
+                <div className="flex justify-between items-center pt-3 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setUpdateStep('select_type')}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    onClick={handleSaveWalletBalance}
+                    disabled={savingWallet || walletBalanceInput === ''}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 text-xs font-bold shadow-lg shadow-amber-500/20 disabled:opacity-50 flex items-center space-x-2"
+                  >
+                    {savingWallet ? (
+                      <><div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" /><span>Saving...</span></>
+                    ) : updateType === UPDATE_TYPES.BOTH ? (
+                      <><span>Save & Continue to Holdings</span><ChevronRight className="w-4 h-4" /></>
+                    ) : (
+                      <><PiggyBank className="w-4 h-4" /><span>Save Wallet Balance</span></>
+                    )}
+                  </button>
+                </div>
               </div>
-            </form>
+            )}
+
+            {/* STEP 3: Screenshot Upload */}
+            {updateStep === 'screenshot_upload' && (
+              <form onSubmit={handleUploadSubmit} className="space-y-4">
+                {updateType === UPDATE_TYPES.BOTH && (
+                  <div className="flex items-center space-x-2 p-3 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-300">
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    <span>Wallet balance saved! Now upload your screenshot to update stock holdings.</span>
+                  </div>
+                )}
+                <div
+                  onDragEnter={handleDrag}
+                  onDragOver={handleDrag}
+                  onDragLeave={handleDrag}
+                  onDrop={handleDrop}
+                  className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
+                    dragActive ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-800 hover:border-slate-700 bg-slate-900/60'
+                  }`}
+                >
+                  <input
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleFileChange}
+                    className="hidden"
+                    id="account-detail-screenshot-input"
+                  />
+                  <label htmlFor="account-detail-screenshot-input" className="cursor-pointer space-y-2 block">
+                    <Image className="w-8 h-8 text-indigo-400 mx-auto" />
+                    {selectedFiles.length > 0 ? (
+                      <div>
+                        <p className="text-xs font-bold text-emerald-400">{selectedFiles.length} Screenshot(s) Selected</p>
+                        <p className="text-[10px] text-slate-400 truncate max-w-[240px] mx-auto mt-1">
+                          {selectedFiles.map(f => f.name).join(', ')}
+                        </p>
+                      </div>
+                    ) : (
+                      <div>
+                        <p className="text-xs font-bold text-slate-200">Click or Drag & Drop Screenshots</p>
+                        <p className="text-[10px] text-slate-400 mt-0.5">PNG, JPG, WEBP formats supported · Multiple files OK</p>
+                      </div>
+                    )}
+                  </label>
+                </div>
+
+                <div className="flex justify-between items-center pt-3 border-t border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => updateType === UPDATE_TYPES.BOTH ? setUpdateStep('wallet_input') : setUpdateStep('select_type')}
+                    className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                  >
+                    ← Back
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={selectedFiles.length === 0 || uploading}
+                    className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-xs transition-all shadow-md shadow-emerald-500/20 disabled:opacity-50 flex items-center space-x-2"
+                  >
+                    {uploading ? (
+                      <>
+                        <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
+                        <span>Parsing {selectedFiles.length} File(s)...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Layers className="w-4 h-4" />
+                        <span>Process & Update Holdings</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
+
           </div>
         </div>
       )}
@@ -275,9 +455,9 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
         </div>
       ) : (
         <>
-          {/* Top 5 Metrics Banner (Dual USD + INR for US Accounts) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            
+          {/* Top Metrics Cards (5 + Wallet Balance) */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+
             {/* 1. Invested Value */}
             <div className="glass-panel p-5 rounded-2xl border border-slate-800">
               <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">1. Invested Value</p>
@@ -285,11 +465,11 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                 {currencySymbol}{(summary.invested_value || 0).toLocaleString('en-US')}
               </p>
               {isUSAccount && summary.invested_value_inr && (
-                <p className="text-xs font-semibold text-emerald-400 mt-1 flex items-center">
-                  ₹{(summary.invested_value_inr).toLocaleString('en-IN')} INR
+                <p className="text-xs font-semibold text-emerald-400 mt-1">
+                  ₹{(summary.invested_value_inr).toLocaleString('en-IN')}
                 </p>
               )}
-              <span className="text-[10px] text-slate-500 block mt-0.5">Σ (Avg Price × Qty)</span>
+              <span className="text-[10px] text-slate-500 block mt-0.5">Σ (Avg × Qty)</span>
             </div>
 
             {/* 2. Current Value */}
@@ -297,46 +477,69 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
               <div className="flex justify-between items-center mb-1">
                 <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">2. Current Value</p>
                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 flex items-center">
-                  <Globe className="w-2.5 h-2.5 mr-1" /> Realtime API
+                  <Globe className="w-2.5 h-2.5 mr-1" /> Live
                 </span>
               </div>
               <p className="text-xl font-bold text-white">
                 {currencySymbol}{(summary.current_value || 0).toLocaleString('en-US')}
               </p>
               {isUSAccount && summary.current_value_inr && (
-                <p className="text-xs font-semibold text-emerald-400 mt-1 flex items-center">
-                  ₹{(summary.current_value_inr).toLocaleString('en-IN')} INR
+                <p className="text-xs font-semibold text-emerald-400 mt-1">
+                  ₹{(summary.current_value_inr).toLocaleString('en-IN')}
                 </p>
               )}
-              <span className="text-[10px] text-slate-500 block mt-0.5">Σ (Live Price × Qty)</span>
+              <span className="text-[10px] text-slate-500 block mt-0.5">Σ (Live × Qty)</span>
             </div>
 
-            {/* 3. Holding Count */}
+            {/* 3. Wallet Balance */}
+            <div className={`glass-panel p-5 rounded-2xl border ${hasWalletBalance ? 'border-amber-500/30 bg-amber-500/5' : 'border-slate-800'}`}>
+              <div className="flex justify-between items-center mb-1">
+                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">3. Wallet Balance</p>
+                <button
+                  onClick={openUpdateModal}
+                  className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                  title="Update wallet balance"
+                >
+                  Edit
+                </button>
+              </div>
+              <p className={`text-xl font-bold ${hasWalletBalance ? 'text-amber-400' : 'text-slate-500'}`}>
+                {hasWalletBalance ? `${currencySymbol}${walletBal.toLocaleString('en-US')}` : '—'}
+              </p>
+              {isUSAccount && hasWalletBalance && summary.wallet_balance_inr > 0 && (
+                <p className="text-xs font-semibold text-amber-400/70 mt-1">
+                  ₹{summary.wallet_balance_inr.toLocaleString('en-IN')}
+                </p>
+              )}
+              <span className="text-[10px] text-slate-500 block mt-0.5">Uninvested Cash</span>
+            </div>
+
+            {/* 4. Holding Count */}
             <div className="glass-panel p-5 rounded-2xl border border-slate-800">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">3. Holding Count</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">4. Holdings</p>
               <p className="text-xl font-bold text-indigo-400">
                 {summary.holding_count || 0}
               </p>
               <span className="text-[10px] text-slate-500 block mt-[18px]">Unique Stock Lines</span>
             </div>
 
-            {/* 4. PNL */}
+            {/* 5. PNL */}
             <div className="glass-panel p-5 rounded-2xl border border-slate-800">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">4. PNL</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">5. P&L</p>
               <p className={`text-xl font-bold ${isPositivePnl ? 'text-emerald-400' : 'text-rose-400'}`}>
                 {isPositivePnl ? '+' : ''}{currencySymbol}{(summary.pnl || 0).toLocaleString('en-US')}
               </p>
               {isUSAccount && summary.pnl_inr !== undefined && (
-                <p className={`text-xs font-semibold mt-1 flex items-center ${isPositivePnl ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {isPositivePnl ? '+' : ''}₹{(summary.pnl_inr).toLocaleString('en-IN')} INR
+                <p className={`text-xs font-semibold mt-1 ${isPositivePnl ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {isPositivePnl ? '+' : ''}₹{(summary.pnl_inr).toLocaleString('en-IN')}
                 </p>
               )}
               <span className="text-[10px] text-slate-500 block mt-0.5">Current − Invested</span>
             </div>
 
-            {/* 5. PNL % */}
+            {/* 6. PNL % */}
             <div className="glass-panel p-5 rounded-2xl border border-slate-800">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">5. PNL %</p>
+              <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">6. P&L %</p>
               <div className="flex items-center space-x-1.5 mt-0.5">
                 <span className={`inline-flex items-center text-base font-extrabold px-2.5 py-0.5 rounded-lg ${
                   isPositivePnl
@@ -347,12 +550,12 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                   {isPositivePnl ? '+' : ''}{summary.pnl_percent || 0}%
                 </span>
               </div>
-              <span className="text-[10px] text-slate-500 mt-2 block">(PNL / Invested) × 100</span>
+              <span className="text-[10px] text-slate-500 mt-2 block">(P&L / Invested) × 100</span>
             </div>
 
           </div>
 
-          {/* Clean Holdings Table for Selected Account */}
+          {/* Holdings Table */}
           <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
             <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center">
               <div>
@@ -374,7 +577,7 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                     <th className="py-3.5 px-4 text-right">Live Price ({currencySymbol})</th>
                     <th className="py-3.5 px-4 text-right">Invested Value</th>
                     <th className="py-3.5 px-4 text-right">Current Value</th>
-                    <th className="py-3.5 px-4 text-right">PNL</th>
+                    <th className="py-3.5 px-4 text-right">P&L</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60 text-xs">

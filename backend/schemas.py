@@ -5,6 +5,7 @@ from datetime import datetime
 class AccountBase(BaseModel):
     name: str
     currency_type: Optional[str] = "IND"  # "IND" (₹ INR) or "US" ($ USD)
+    wallet_balance: Optional[float] = 0.0
 
 class AccountCreate(AccountBase):
     pass
@@ -12,11 +13,13 @@ class AccountCreate(AccountBase):
 class AccountUpdate(BaseModel):
     name: Optional[str] = None
     currency_type: Optional[str] = None
+    wallet_balance: Optional[float] = None
 
 class AccountResponse(AccountBase):
     id: str
     created_at: datetime
     last_synced_at: Optional[datetime] = None
+    wallet_balance: Optional[float] = 0.0
 
     class Config:
         from_attributes = True
@@ -60,3 +63,6 @@ class VerifyHoldingsRequest(BaseModel):
     holdings: List[HoldingBase]
 
 VerifySaveRequest = VerifyHoldingsRequest
+
+class WalletBalanceUpdate(BaseModel):
+    wallet_balance: float

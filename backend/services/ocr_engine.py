@@ -128,7 +128,7 @@ def normalize_symbol(name_str: str) -> str:
         if key in cleaned:
             return sym
 
-    cleaned_name = re.sub(r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERVICES|ETF|INDEX|REIT|CLASS|A|B|A/S)\b", "", cleaned).strip()
+    cleaned_name = re.sub(r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERVICES|ETF|INDEX|REIT|CLASS|CLAS|A|B|A/S)\b", "", cleaned).strip()
 
     for key, sym in US_STOCK_TICKER_MAP.items():
         if key in cleaned_name:
@@ -268,9 +268,11 @@ class PortfolioOCREngine:
                 if not symbol and company_name:
                     symbol = normalize_symbol(company_name)
 
-                # Clean company name
+                # Clean company name trailing prices / truncated text
                 if company_name:
                     company_name = re.sub(r"\s+\$?[\d\.,]+$", "", company_name).strip()
+                    company_name = re.sub(r"\s*Clas\.\.\.$", "", company_name).strip()
+                    company_name = re.sub(r"\s*Class\s*[AB]?$", "", company_name, flags=re.IGNORECASE).strip()
 
                 avg_price = 0.0
                 avg_m = re.search(r'\$([\d,]+\.?\d*)\s*Avg', qbox['text'], re.IGNORECASE)
@@ -278,7 +280,7 @@ class PortfolioOCREngine:
                     avg_price = clean_currency(avg_m.group(1))
                 else:
                     for candidate in sorted_boxes:
-                        if (qy - 15 <= candidate['y'] <= qy + 15) and (400 <= candidate['min_x'] <= 550):
+                        if (qy - 15 <= candidate['y'] <= qy + 15) and (350 <= candidate['min_x'] <= 600):
                             am = re.search(r'\$([\d,]+\.?\d*)', candidate['text'])
                             if am:
                                 avg_price = clean_currency(am.group(1))
@@ -294,12 +296,15 @@ class PortfolioOCREngine:
 
                 if symbol and symbol not in seen_symbols:
                     seen_symbols.add(symbol)
+                    # Note: current_price is set to 0.0 when not found in screenshot.
+                    # Live prices are fetched from market API (Yahoo Finance) via "Refresh Live Prices".
+                    # Do NOT fall back to avg_price — that causes wrong P&L calculations.
                     holdings.append({
                         "symbol": symbol,
                         "company_name": company_name or symbol,
                         "quantity": qty,
                         "avg_buy_price": avg_price,
-                        "current_price": ltp if ltp > 0 else avg_price
+                        "current_price": ltp if ltp > 0 else 0.0
                     })
 
         # --- Strategy B: Groww Desktop Table Single-Line Matching ---
