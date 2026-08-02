@@ -96,7 +96,7 @@ export default function ConsolidatedPortfolio({ portfolioData, accounts, selecte
                     : 'bg-slate-900/40 text-slate-500 border-slate-800 hover:border-slate-700'
                 }`}
               >
-                {acc.name} ({acc.broker})
+                {acc.name} ({acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
               </button>
             );
           })}
@@ -126,9 +126,9 @@ export default function ConsolidatedPortfolio({ portfolioData, accounts, selecte
                 <th className="py-3.5 px-4 text-right">Qty</th>
                 <th className="py-3.5 px-4 text-right">WACP (Avg)</th>
                 <th className="py-3.5 px-4 text-right">LTP (Current)</th>
-                <th className="py-3.5 px-4 text-right">Invested</th>
-                <th className="py-3.5 px-4 text-right">Current Value</th>
-                <th className="py-3.5 px-4 text-right">P&L</th>
+                <th className="py-3.5 px-4 text-right">Invested (₹)</th>
+                <th className="py-3.5 px-4 text-right">Current Value (₹)</th>
+                <th className="py-3.5 px-4 text-right">P&L (₹)</th>
                 <th className="py-3.5 px-4 text-right">Weight %</th>
                 <th className="py-3.5 px-4 text-center">Accounts</th>
               </tr>
@@ -184,7 +184,6 @@ export default function ConsolidatedPortfolio({ portfolioData, accounts, selecte
                                 <div key={idx} className="bg-slate-950 p-3 rounded-lg border border-slate-800/80">
                                   <div className="flex justify-between items-center mb-1.5">
                                     <span className="font-semibold text-slate-200">{acc.account_name}</span>
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 font-mono">{acc.broker}</span>
                                   </div>
                                   <div className="grid grid-cols-2 gap-1 text-[11px] text-slate-400">
                                     <div>Qty: <span className="font-medium text-slate-200">{acc.quantity}</span></div>
