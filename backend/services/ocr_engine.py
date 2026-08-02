@@ -41,31 +41,25 @@ def clean_currency(val_str: str) -> float:
 # US Stock Ticker dictionary for automatic resolution
 US_STOCK_TICKER_MAP = {
     "APPLE": "AAPL",
-    "APPLE INC": "AAPL",
     "NVIDIA": "NVDA",
-    "NVIDIA CORP": "NVDA",
-    "NVIDIA CORPORATION": "NVDA",
     "TESLA": "TSLA",
-    "TESLA INC": "TSLA",
     "MICROSOFT": "MSFT",
-    "MICROSOFT CORP": "MSFT",
     "AMAZON": "AMZN",
-    "AMAZON.COM": "AMZN",
     "ALPHABET": "GOOGL",
     "GOOGLE": "GOOGL",
     "META": "META",
-    "META PLATFORMS": "META",
     "FACEBOOK": "META",
     "PALANTIR": "PLTR",
-    "PALANTIR TECHNOLOGIES": "PLTR",
-    "AMD": "AMD",
-    "ADVANCED MICRO DEVICES": "AMD",
+    "ADOBE": "ADBE",
     "NETFLIX": "NFLX",
-    "BERKSHIRE HATHAWAY": "BRK-B",
+    "NOVO NORDISK": "NVO",
+    "NOVO-NORDISK": "NVO",
+    "OKLO": "OKLO",
+    "AMD": "AMD",
+    "BERKSHIRE": "BRK-B",
     "COINBASE": "COIN",
     "MICROSTRATEGY": "MSTR",
     "DISNEY": "DIS",
-    "WALT DISNEY": "DIS",
     "INTEL": "INTC",
     "BROADCOM": "AVGO",
     "QUALCOMM": "QCOM",
@@ -124,21 +118,17 @@ STOCK_SYMBOL_MAPPING = {
 
 
 def normalize_symbol(name_str: str) -> str:
-    """Converts company name strings to simplified uppercase stock symbol tickers."""
     cleaned = name_str.strip().upper()
     
-    # Check US Ticker map first
     for key, sym in US_STOCK_TICKER_MAP.items():
         if key in cleaned:
             return sym
 
-    # Check Indian Ticker map
     for key, sym in STOCK_SYMBOL_MAPPING.items():
         if key in cleaned:
             return sym
 
-    # Remove generic suffixes
-    cleaned_name = re.sub(r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERV|SERVICES|ETF|INDEX|REIT|AND|PAY)\b", "", cleaned).strip()
+    cleaned_name = re.sub(r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERVICES|ETF|INDEX|REIT|CLASS|A|B|A/S)\b", "", cleaned).strip()
 
     for key, sym in US_STOCK_TICKER_MAP.items():
         if key in cleaned_name:
@@ -153,9 +143,6 @@ def normalize_symbol(name_str: str) -> str:
 
 
 class PortfolioOCREngine:
-    """
-    High-Precision Multi-Engine OCR Processor for Groww, INDmoney (Indian & US Stocks), Zerodha, and Upstox Screenshots.
-    """
 
     @classmethod
     def extract_text_boxes(cls, image_bytes: bytes) -> List[Dict[str, Any]]:
@@ -241,53 +228,122 @@ class PortfolioOCREngine:
             return []
 
         sorted_boxes = sorted(boxes, key=lambda b: (b['min_y'], b['min_x']))
-        full_text_lines = [b['text'] for b in sorted_boxes]
-
         holdings = []
         seen_symbols = set()
 
-        # --- Strategy A: Groww Desktop Table Single-Line Matching ---
-        pattern_groww = r"(\d+(?:\.\d+)?)\s*shares?.*?(?:Avg|Average)\.?[^\d]*([\d,]+\.?\d*)"
-        
-        for idx, box in enumerate(sorted_boxes):
-            text = box['text']
-            m = re.search(pattern_groww, text, re.IGNORECASE)
+        # --- Strategy A: INDmoney / Web Desktop Table View (Qty Column Matching) ---
+        qty_boxes = []
+        for b in sorted_boxes:
+            m = re.search(r'([\d.]+)\s*Qty', b['text'], re.IGNORECASE)
             if m:
-                qty = float(m.group(1))
-                avg_price = clean_currency(m.group(2))
-                box_y = box['y']
+                try:
+                    qval = float(m.group(1))
+                    if qval > 0:
+                        qty_boxes.append((qval, b))
+                except ValueError:
+                    pass
 
+        if qty_boxes:
+            for qty, qbox in qty_boxes:
+                qy = qbox['y']
                 company_name = ""
-                for prev in reversed(sorted_boxes[:idx]):
-                    if (box_y - 60 <= prev['y'] <= box_y - 5) and prev['min_x'] < 350:
-                        ptext = prev['text']
-                        if re.search(r'[A-Za-z]{2,}', ptext) and not any(k in ptext.lower() for k in ["company", "market price", "returns", "invested", "current"]):
-                            company_name = ptext
-                            break
+                symbol = ""
 
-                ltp = avg_price
                 for candidate in sorted_boxes:
-                    if (box_y - 60 <= candidate['y'] <= box_y + 15) and (350 <= candidate['x'] <= 650):
-                        c_match = re.search(r"^(?:₹|Rs\.?|\$|\?)?\s*([\d,]+\.\d{2})$", candidate['text'])
-                        if c_match:
-                            price_val = clean_currency(c_match.group(1))
-                            if price_val > 0:
-                                ltp = price_val
+                    if (qy - 35 <= candidate['y'] <= qy + 5) and candidate['min_x'] < 160:
+                        txt = candidate['text'].strip()
+                        if re.match(r'^[A-Z]{2,6}$', txt) and not any(k in txt.lower() for k in ['stock', 'qty', 'avg', 'current', 'reports']):
+                            symbol = txt
+                        elif re.search(r'[A-Za-z]{3,}', txt) and not any(k in txt.lower() for k in ['stock name', 'qty', 'avg', 'current', 'invested', 'reports']):
+                            company_name = txt
+
+                if not symbol and company_name:
+                    for candidate in sorted_boxes:
+                        if (qy - 5 <= candidate['y'] <= qy + 25) and candidate['min_x'] < 100:
+                            txt = candidate['text'].strip()
+                            if re.match(r'^[A-Z0-9]{2,6}$', txt):
+                                symbol = txt
                                 break
 
-                if company_name and qty > 0:
+                if not symbol and company_name:
                     symbol = normalize_symbol(company_name)
-                    if symbol not in seen_symbols:
-                        seen_symbols.add(symbol)
-                        holdings.append({
-                            "symbol": symbol,
-                            "company_name": company_name,
-                            "quantity": qty,
-                            "avg_buy_price": avg_price,
-                            "current_price": ltp if ltp > 0 else avg_price
-                        })
 
-        # --- Strategy B: Groww Mobile / Cropped Multi-Line Spatial Matching ---
+                # Clean company name
+                if company_name:
+                    company_name = re.sub(r"\s+\$?[\d\.,]+$", "", company_name).strip()
+
+                avg_price = 0.0
+                avg_m = re.search(r'\$([\d,]+\.?\d*)\s*Avg', qbox['text'], re.IGNORECASE)
+                if avg_m:
+                    avg_price = clean_currency(avg_m.group(1))
+                else:
+                    for candidate in sorted_boxes:
+                        if (qy - 15 <= candidate['y'] <= qy + 15) and (400 <= candidate['min_x'] <= 550):
+                            am = re.search(r'\$([\d,]+\.?\d*)', candidate['text'])
+                            if am:
+                                avg_price = clean_currency(am.group(1))
+                                break
+
+                ltp = 0.0
+                for candidate in sorted_boxes:
+                    if (qy - 25 <= candidate['y'] <= qy + 10) and (150 <= candidate['min_x'] <= 250):
+                        pm = re.search(r'\$([\d,]+\.?\d*)', candidate['text'])
+                        if pm:
+                            ltp = clean_currency(pm.group(1))
+                            break
+
+                if symbol and symbol not in seen_symbols:
+                    seen_symbols.add(symbol)
+                    holdings.append({
+                        "symbol": symbol,
+                        "company_name": company_name or symbol,
+                        "quantity": qty,
+                        "avg_buy_price": avg_price,
+                        "current_price": ltp if ltp > 0 else avg_price
+                    })
+
+        # --- Strategy B: Groww Desktop Table Single-Line Matching ---
+        if not holdings:
+            pattern_groww = r"(\d+(?:\.\d+)?)\s*shares?.*?(?:Avg|Average)\.?[^\d]*([\d,]+\.?\d*)"
+            for idx, box in enumerate(sorted_boxes):
+                text = box['text']
+                m = re.search(pattern_groww, text, re.IGNORECASE)
+                if m:
+                    qty = float(m.group(1))
+                    avg_price = clean_currency(m.group(2))
+                    box_y = box['y']
+
+                    company_name = ""
+                    for prev in reversed(sorted_boxes[:idx]):
+                        if (box_y - 60 <= prev['y'] <= box_y - 5) and prev['min_x'] < 350:
+                            ptext = prev['text']
+                            if re.search(r'[A-Za-z]{2,}', ptext) and not any(k in ptext.lower() for k in ["company", "market price", "returns", "invested", "current"]):
+                                company_name = ptext
+                                break
+
+                    ltp = avg_price
+                    for candidate in sorted_boxes:
+                        if (box_y - 60 <= candidate['y'] <= box_y + 15) and (350 <= candidate['x'] <= 650):
+                            c_match = re.search(r"^(?:₹|Rs\.?|\$|\?)?\s*([\d,]+\.\d{2})$", candidate['text'])
+                            if c_match:
+                                price_val = clean_currency(c_match.group(1))
+                                if price_val > 0:
+                                    ltp = price_val
+                                    break
+
+                    if company_name and qty > 0:
+                        symbol = normalize_symbol(company_name)
+                        if symbol not in seen_symbols:
+                            seen_symbols.add(symbol)
+                            holdings.append({
+                                "symbol": symbol,
+                                "company_name": company_name,
+                                "quantity": qty,
+                                "avg_buy_price": avg_price,
+                                "current_price": ltp if ltp > 0 else avg_price
+                            })
+
+        # --- Strategy C: Groww Mobile / Cropped Multi-Line Spatial Matching ---
         if not holdings:
             for idx, box in enumerate(sorted_boxes):
                 text = box['text']
@@ -340,52 +396,6 @@ class PortfolioOCREngine:
                                 "quantity": qty,
                                 "avg_buy_price": avg_price if avg_price > 0 else ltp,
                                 "current_price": ltp if ltp > 0 else avg_price
-                            })
-
-        # --- Strategy C & D: INDmoney US Stocks & Generic App Card Parser ---
-        if not holdings:
-            lines = full_text_lines
-            for idx, line in enumerate(lines):
-                # Identify Company Name or Ticker Symbol (e.g. 'Apple Inc.', 'AAPL', 'NVIDIA', 'TSLA', 'Microsoft')
-                if (re.search(r"^[A-Z]{2,5}$", line.strip()) or re.search(r"[A-Za-z]{3,}", line)) and not any(k in line.lower() for k in ["portfolio", "holdings", "invested", "returns", "total", "summary", "company", "market price", "account", "indmoney"]):
-                    company_name = line.strip()
-                    window_boxes = sorted_boxes[max(0, idx - 2): min(len(sorted_boxes), idx + 8)]
-                    window_text = " ".join([b['text'] for b in window_boxes])
-
-                    qty = 0.0
-                    avg_price = 0.0
-                    current_price = 0.0
-
-                    # 1. Quantity matching (e.g. '0.45 shares', 'Shares: 2.5', 'Qty: 10', '10.5 shares')
-                    qty_match = re.search(r"(?:Qty|Shares|Quantity)?[:\s]*([\d\.]+)\s*(?:shares|units)?", window_text, re.IGNORECASE)
-                    if qty_match:
-                        try:
-                            val = float(qty_match.group(1))
-                            if val > 0 and val < 100000:
-                                qty = val
-                        except ValueError:
-                            pass
-
-                    # 2. Avg Price matching (e.g. 'Avg: $185.50', 'Avg Cost: $200', 'Buy: $150')
-                    avg_match = re.search(r"(?:Avg|Average|Buy|Cost)[:\s]*(?:\$|₹|Rs\.?)?\s*([\d,]+\.?\d*)", window_text, re.IGNORECASE)
-                    if avg_match:
-                        avg_price = clean_currency(avg_match.group(1))
-
-                    # 3. Market Price / LTP matching (e.g. '$220.30', 'LTP: $220.30', 'Price: $220')
-                    curr_match = re.search(r"(?:Current|LTP|Market|Price)[:\s]*(?:\$|₹|Rs\.?)?\s*([\d,]+\.?\d*)", window_text, re.IGNORECASE)
-                    if curr_match:
-                        current_price = clean_currency(curr_match.group(1))
-
-                    if qty > 0 and (avg_price > 0 or current_price > 0):
-                        symbol = normalize_symbol(company_name)
-                        if symbol not in seen_symbols and symbol != "STOCK":
-                            seen_symbols.add(symbol)
-                            holdings.append({
-                                "symbol": symbol,
-                                "company_name": company_name,
-                                "quantity": qty,
-                                "avg_buy_price": avg_price if avg_price > 0 else current_price,
-                                "current_price": current_price if current_price > 0 else avg_price
                             })
 
         return holdings
