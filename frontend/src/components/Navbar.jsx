@@ -1,12 +1,12 @@
 import React from 'react';
-import { LayoutDashboard, PieChart, Wallet, RefreshCw, History, UserCheck, Layers } from 'lucide-react';
+import { LayoutDashboard, PieChart, Wallet, RefreshCw, History, UserCheck } from 'lucide-react';
 
 export default function Navbar({ activeTab, setActiveTab, onSyncNow, syncing }) {
   const navItems = [
     { id: 'portfolio', label: 'Consolidated Portfolio', icon: LayoutDashboard },
-    { id: 'account-detail', label: 'Accounts', icon: Wallet },
+    { id: 'account-detail', label: 'Accounts Summary', icon: Wallet },
     { id: 'rebalance', label: 'Target Rebalancing', icon: PieChart },
-    { id: 'accounts', label: 'Account Ingestion', icon: UserCheck },
+    { id: 'accounts', label: 'Account Management', icon: UserCheck },
     { id: 'logs', label: 'Sync Audit Logs', icon: History },
   ];
 

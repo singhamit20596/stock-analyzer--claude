@@ -8,7 +8,16 @@ import SyncLogsModal from './components/SyncLogsModal';
 import VerificationModal from './components/VerificationModal';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('portfolio');
+  // Tab persistence in localStorage
+  const [activeTab, setActiveTab] = useState(() => {
+    return localStorage.getItem('activeTab') || 'portfolio';
+  });
+
+  const handleTabChange = (tabId) => {
+    setActiveTab(tabId);
+    localStorage.setItem('activeTab', tabId);
+  };
+
   const [accounts, setAccounts] = useState([]);
   const [targetAllocations, setTargetAllocations] = useState([]);
   const [showLogsModal, setShowLogsModal] = useState(false);
@@ -224,7 +233,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-16">
       <Navbar
         activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        setActiveTab={handleTabChange}
         onOpenLogs={openSyncLogs}
       />
 
@@ -238,14 +247,18 @@ export default function App() {
             loading={consolidatedLoading}
           />
         )}
-        {activeTab === 'account-detail' && <AccountDetailView accounts={accounts} />}
+        {activeTab === 'account-detail' && (
+          <AccountDetailView
+            accounts={accounts}
+            onImageOCRUpload={handleImageOCRUpload}
+          />
+        )}
         {activeTab === 'accounts' && (
           <AccountsView
             accounts={accounts}
             onAddAccount={handleAddAccount}
             onUpdateAccount={handleUpdateAccount}
             onDeleteAccount={handleDeleteAccount}
-            onImageOCRUpload={handleImageOCRUpload}
           />
         )}
         {activeTab === 'rebalance' && (

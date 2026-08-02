@@ -1,10 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft } from 'lucide-react';
+import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft, Upload, Image, Layers, X, CheckCircle2 } from 'lucide-react';
 
-export default function AccountDetailView({ accounts }) {
+export default function AccountDetailView({ accounts, onImageOCRUpload }) {
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [accountData, setAccountData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
+
+  // Upload Holdings Modal State
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState([]);
+  const [dragActive, setDragActive] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (accounts && accounts.length > 0 && !selectedAccountId) {
@@ -34,12 +41,54 @@ export default function AccountDetailView({ accounts }) {
     }
   }, [selectedAccountId]);
 
+  const handleFileChange = (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      setSelectedFiles(Array.from(e.target.files));
+    }
+  };
+
+  const handleDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setDragActive(true);
+    } else if (e.type === "dragleave") {
+      setDragActive(false);
+    }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      setSelectedFiles(Array.from(e.dataTransfer.files));
+    }
+  };
+
+  const handleUploadSubmit = async (e) => {
+    e.preventDefault();
+    if (selectedFiles.length === 0) return;
+    setUploading(true);
+    try {
+      await onImageOCRUpload(selectedFiles, selectedAccountId);
+      setShowUploadModal(false);
+      setSelectedFiles([]);
+      setToastMessage("Holdings upload processed! Verify and save your parsed holdings.");
+      setTimeout(() => setToastMessage(null), 5000);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setUploading(false);
+    }
+  };
+
   if (!accounts || accounts.length === 0) {
     return (
       <div className="glass-panel p-8 rounded-2xl border border-slate-800 text-center space-y-3">
         <AlertCircle className="w-8 h-8 text-amber-400 mx-auto" />
         <h3 className="text-base font-bold text-slate-200">No Portfolio Accounts Added Yet</h3>
-        <p className="text-xs text-slate-400">Add an account from the "Account Ingestion" tab to view individual account metrics.</p>
+        <p className="text-xs text-slate-400">Add an account from the "Account Management" tab to view individual account metrics.</p>
       </div>
     );
   }
@@ -56,9 +105,22 @@ export default function AccountDetailView({ accounts }) {
   const isPositivePnl = (summary.pnl || 0) >= 0;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+
+      {/* Success Notification Banner */}
+      {toastMessage && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-2xl text-xs font-semibold flex items-center justify-between animate-in fade-in duration-200">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{toastMessage}</span>
+          </div>
+          <button onClick={() => setToastMessage(null)} className="text-emerald-400 hover:text-emerald-200">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
       
-      {/* Account Selector & Currency Header Bar */}
+      {/* Account Selector & Header Action Bar */}
       <div className="glass-panel p-5 rounded-2xl border border-slate-800 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <div>
           <div className="flex items-center space-x-2">
@@ -82,13 +144,13 @@ export default function AccountDetailView({ accounts }) {
           </div>
         )}
 
-        {/* Account Dropdown */}
-        <div className="flex items-center space-x-3 w-full md:w-auto">
-          <label className="text-xs font-semibold text-slate-400 shrink-0">Select Account:</label>
+        {/* Account Selector + Refresh + Update Holdings Action Buttons */}
+        <div className="flex items-center space-x-2.5 w-full md:w-auto">
+          <label className="text-xs font-semibold text-slate-400 shrink-0">Account:</label>
           <select
             value={selectedAccountId}
             onChange={(e) => setSelectedAccountId(e.target.value)}
-            className="bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 w-full md:w-64"
+            className="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs font-bold text-slate-100 focus:outline-none focus:border-indigo-500 w-full md:w-56"
           >
             {accounts.map((acc) => (
               <option key={acc.id} value={acc.id}>
@@ -97,16 +159,114 @@ export default function AccountDetailView({ accounts }) {
             ))}
           </select>
 
+          {/* Refresh Live Prices Button */}
           <button
             onClick={() => fetchAccountDetail(selectedAccountId)}
             disabled={loading}
-            className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 shrink-0"
+            className="p-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium border border-slate-700 shrink-0 flex items-center transition-all"
             title="Refresh Live Prices"
           >
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
+
+          {/* Update Holdings Button right next to Refresh Live Prices */}
+          <button
+            onClick={() => setShowUploadModal(true)}
+            className="px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30 shrink-0 flex items-center space-x-1.5 transition-all shadow-md shadow-emerald-500/10"
+            title="Upload Screenshots to Update Holdings"
+          >
+            <Upload className="w-4 h-4 text-emerald-400" />
+            <span className="hidden sm:inline">Update Holdings</span>
+          </button>
         </div>
       </div>
+
+      {/* Upload Holdings Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-panel max-w-lg w-full p-6 rounded-2xl border border-slate-700 shadow-2xl space-y-4 animate-in fade-in zoom-in-95 duration-200">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-800">
+              <div>
+                <h3 className="text-base font-bold text-slate-100 flex items-center">
+                  <Upload className="w-5 h-5 mr-2 text-emerald-400" /> Update Holdings via Screenshot
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">Uploading for <span className="font-bold text-slate-200">{account_name}</span></p>
+              </div>
+              <button
+                onClick={() => setShowUploadModal(false)}
+                className="text-slate-400 hover:text-slate-200 p-1 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleUploadSubmit} className="space-y-4">
+              {/* Drag & Drop Multi-File Zone */}
+              <div
+                onDragEnter={handleDrag}
+                onDragOver={handleDrag}
+                onDragLeave={handleDrag}
+                onDrop={handleDrop}
+                className={`border-2 border-dashed rounded-2xl p-6 text-center transition-all ${
+                  dragActive ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-800 hover:border-slate-700 bg-slate-900/60'
+                }`}
+              >
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handleFileChange}
+                  className="hidden"
+                  id="account-detail-screenshot-input"
+                />
+                <label htmlFor="account-detail-screenshot-input" className="cursor-pointer space-y-2 block">
+                  <Image className="w-8 h-8 text-indigo-400 mx-auto" />
+                  {selectedFiles.length > 0 ? (
+                    <div>
+                      <p className="text-xs font-bold text-emerald-400">{selectedFiles.length} Screenshot(s) Selected</p>
+                      <p className="text-[10px] text-slate-400 truncate max-w-[240px] mx-auto mt-1">
+                        {selectedFiles.map(f => f.name).join(', ')}
+                      </p>
+                    </div>
+                  ) : (
+                    <div>
+                      <p className="text-xs font-bold text-slate-200">Click or Drag & Drop Screenshots</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">PNG, JPG, WEBP formats supported</p>
+                    </div>
+                  )}
+                </label>
+              </div>
+
+              <div className="flex justify-end space-x-3 pt-3 border-t border-slate-800">
+                <button
+                  type="button"
+                  onClick={() => setShowUploadModal(false)}
+                  className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={selectedFiles.length === 0 || uploading}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold text-xs transition-all shadow-md shadow-emerald-500/20 disabled:opacity-50 flex items-center space-x-2"
+                >
+                  {uploading ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
+                      <span>Parsing {selectedFiles.length} File(s)...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Layers className="w-4 h-4" />
+                      <span>Process & Update Holdings</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
 
       {loading ? (
         <div className="flex flex-col items-center justify-center py-20 text-slate-400 space-y-4">

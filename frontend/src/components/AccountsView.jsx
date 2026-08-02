@@ -1,14 +1,10 @@
 import React, { useState } from 'react';
-import { Plus, Upload, Trash2, Edit2, UserCheck, Image, ShieldCheck, DollarSign, Coins, Layers, AlertTriangle, X, Check } from 'lucide-react';
+import { Plus, Trash2, Edit2, UserCheck, DollarSign, Coins, AlertTriangle, X, CheckCircle2 } from 'lucide-react';
 
-export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, onDeleteAccount, onImageOCRUpload }) {
+export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, onDeleteAccount }) {
   const [newAccName, setNewAccName] = useState('');
   const [newCurrencyType, setNewCurrencyType] = useState('IND');
-  const [selectedAccId, setSelectedAccId] = useState('');
-
-  const [selectedFiles, setSelectedFiles] = useState([]);
-  const [dragActive, setDragActive] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [toastMessage, setToastMessage] = useState(null);
 
   // Confirmation Modal States
   const [confirmModal, setConfirmModal] = useState({
@@ -19,14 +15,18 @@ export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, 
     editCurrency: 'IND'
   });
 
-  const handleAddSubmit = (e) => {
+  const handleAddSubmit = async (e) => {
     e.preventDefault();
     if (!newAccName.trim()) return;
-    onAddAccount({
-      name: newAccName.trim(),
+    
+    const addedName = newAccName.trim();
+    await onAddAccount({
+      name: addedName,
       currency_type: newCurrencyType
     });
     setNewAccName('');
+    setToastMessage(`Account "${addedName}" created successfully!`);
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
   const openDeleteConfirmation = (acc) => {
@@ -49,60 +49,38 @@ export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, 
     });
   };
 
-  const handleConfirmAction = () => {
+  const handleConfirmAction = async () => {
     if (!confirmModal.account) return;
     if (confirmModal.type === 'DELETE') {
-      onDeleteAccount(confirmModal.account.id);
+      await onDeleteAccount(confirmModal.account.id);
+      setToastMessage(`Account "${confirmModal.account.name}" deleted.`);
     } else if (confirmModal.type === 'EDIT') {
-      onUpdateAccount(confirmModal.account.id, {
+      await onUpdateAccount(confirmModal.account.id, {
         name: confirmModal.editName.trim(),
         currency_type: confirmModal.editCurrency
       });
+      setToastMessage(`Account "${confirmModal.editName.trim()}" updated successfully.`);
     }
     setConfirmModal({ isOpen: false, type: null, account: null, editName: '', editCurrency: 'IND' });
-  };
-
-  const handleFileChange = (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      setSelectedFiles(Array.from(e.target.files));
-    }
-  };
-
-  const handleDrag = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
-    }
-  };
-
-  const handleDrop = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      setSelectedFiles(Array.from(e.dataTransfer.files));
-    }
-  };
-
-  const handleUploadSubmit = async (e) => {
-    e.preventDefault();
-    if (selectedFiles.length === 0) return;
-    setUploading(true);
-    try {
-      await onImageOCRUpload(selectedFiles, selectedAccId || null);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setUploading(false);
-    }
+    setTimeout(() => setToastMessage(null), 4000);
   };
 
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 relative">
+    <div className="max-w-4xl mx-auto space-y-6 relative">
       
+      {/* Toast Notification Banner */}
+      {toastMessage && (
+        <div className="bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-2xl text-xs font-semibold flex items-center justify-between animate-in fade-in duration-200">
+          <div className="flex items-center space-x-2">
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            <span>{toastMessage}</span>
+          </div>
+          <button onClick={() => setToastMessage(null)} className="text-emerald-400 hover:text-emerald-200">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Confirmation Modal */}
       {confirmModal.isOpen && (
         <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
@@ -177,18 +155,18 @@ export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, 
         </div>
       )}
 
-      {/* Column 1 & 2: User Accounts List */}
-      <div className="lg:col-span-2 space-y-6">
+      {/* Account Management & Creation */}
+      <div className="space-y-6">
         <div className="glass-panel p-6 rounded-2xl border border-slate-800">
           <div className="flex justify-between items-center mb-6">
             <div>
               <h2 className="text-base font-bold text-slate-100 flex items-center">
-                <UserCheck className="w-5 h-5 mr-2 text-indigo-400" /> User Accounts
+                <UserCheck className="w-5 h-5 mr-2 text-indigo-400" /> Account Management
               </h2>
-              <p className="text-xs text-slate-400">Manage your connected portfolio accounts (US Stocks & Indian Stocks).</p>
+              <p className="text-xs text-slate-400">View, edit, or delete connected portfolio accounts.</p>
             </div>
             <span className="text-xs font-semibold px-2.5 py-1 rounded-lg bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-              {accounts.length} Accounts Configured
+              {accounts.length} Account(s) Active
             </span>
           </div>
 
@@ -244,7 +222,7 @@ export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, 
               <label className="text-xs font-semibold text-slate-400 mb-1 block">Account Name</label>
               <input
                 type="text"
-                placeholder="e.g. Preeti US Portfolio"
+                placeholder="e.g. Sheela Groww Portfolio"
                 value={newAccName}
                 onChange={(e) => setNewAccName(e.target.value)}
                 className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
@@ -272,88 +250,6 @@ export default function AccountsView({ accounts, onAddAccount, onUpdateAccount, 
             </div>
           </form>
         </div>
-      </div>
-
-      {/* Column 3: Multi-Screenshot OCR Upload Drawer */}
-      <div className="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
-        <div>
-          <h3 className="text-base font-bold text-slate-100 flex items-center">
-            <Upload className="w-5 h-5 mr-2 text-emerald-400" /> Multi-Screenshot Ingestion
-          </h3>
-          <p className="text-xs text-slate-400">Upload portfolio holdings screenshots for automatic parsing.</p>
-        </div>
-
-        <form onSubmit={handleUploadSubmit} className="space-y-4">
-          <div>
-            <label className="text-xs font-semibold text-slate-400 mb-1 block">Target Account (Optional)</label>
-            <select
-              value={selectedAccId}
-              onChange={(e) => setSelectedAccId(e.target.value)}
-              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-indigo-500"
-            >
-              <option value="">-- Assign to Account on Verification --</option>
-              {accounts.map((acc) => (
-                <option key={acc.id} value={acc.id}>
-                  {acc.name} ({acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Drag & Drop Multi-File Zone */}
-          <div
-            onDragEnter={handleDrag}
-            onDragOver={handleDrag}
-            onDragLeave={handleDrag}
-            onDrop={handleDrop}
-            className={`border-2 border-dashed rounded-xl p-6 text-center transition-all ${
-              dragActive ? 'border-indigo-500 bg-indigo-500/10' : 'border-slate-800 hover:border-slate-700 bg-slate-900/50'
-            }`}
-          >
-            <input
-              type="file"
-              accept="image/*"
-              multiple
-              onChange={handleFileChange}
-              className="hidden"
-              id="multi-screenshot-input"
-            />
-            <label htmlFor="multi-screenshot-input" className="cursor-pointer space-y-2 block">
-              <Image className="w-8 h-8 text-indigo-400 mx-auto" />
-              {selectedFiles.length > 0 ? (
-                <div>
-                  <p className="text-xs font-bold text-emerald-400">{selectedFiles.length} Screenshot(s) Selected</p>
-                  <p className="text-[10px] text-slate-400 truncate max-w-[200px] mx-auto">
-                    {selectedFiles.map(f => f.name).join(', ')}
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  <p className="text-xs font-semibold text-slate-200 font-bold">Click or Drag & Drop Screenshots</p>
-                  <p className="text-[10px] text-slate-400">PNG, JPG, WEBP formats supported</p>
-                </div>
-              )}
-            </label>
-          </div>
-
-          <button
-            type="submit"
-            disabled={selectedFiles.length === 0 || uploading}
-            className="w-full bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-bold py-2.5 rounded-xl text-xs transition-all shadow-lg shadow-emerald-500/20 disabled:opacity-50 flex items-center justify-center space-x-2"
-          >
-            {uploading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin"></div>
-                <span>Parsing {selectedFiles.length} Screenshot(s)...</span>
-              </>
-            ) : (
-              <>
-                <Layers className="w-4 h-4" />
-                <span>Process & Parse {selectedFiles.length > 0 ? selectedFiles.length : ''} Screenshots</span>
-              </>
-            )}
-          </button>
-        </form>
       </div>
 
     </div>
