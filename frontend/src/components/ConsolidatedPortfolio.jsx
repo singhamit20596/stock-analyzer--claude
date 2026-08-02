@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  ChevronDown, ChevronUp, Search, TrendingUp, TrendingDown, Plus,
-  Layers, Trash2, X, CheckCircle2, AlertCircle, Wallet, Edit2, Globe, PiggyBank
+  ChevronDown, ChevronUp, Search, Plus,
+  Layers, Trash2, X, CheckCircle2, AlertCircle, Edit2, Globe
 } from 'lucide-react';
 
 // ─── Portfolio Creator Modal ───────────────────────────────────────────────────
@@ -100,7 +100,7 @@ function PortfolioCreatorModal({ accounts, existingPortfolio, onClose, onSave })
 }
 
 // ─── Portfolio Table View ──────────────────────────────────────────────────────
-function PortfolioTableView({ portfolioId, allAccounts }) {
+function PortfolioTableView({ portfolioId }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -480,7 +480,7 @@ export default function ConsolidatedPortfolio({ accounts }) {
 
       {/* Portfolio Table */}
       {selectedPortfolioId && (
-        <PortfolioTableView key={selectedPortfolioId} portfolioId={selectedPortfolioId} allAccounts={accounts} />
+        <PortfolioTableView key={selectedPortfolioId} portfolioId={selectedPortfolioId} />
       )}
 
       {/* Portfolio Creator/Editor Modal */}

@@ -1,99 +1,134 @@
-from typing import List, Dict, Any
-from sqlalchemy.orm import Session
-import models
-from services.quote_service import fetch_live_prices_batch, fetch_live_stock_price
+"""Cross-account holdings aggregation.
+
+Everything this module returns is denominated in INR. USD holdings are
+converted on both sides of the P&L — price *and* average cost — because
+converting only one side silently inflates gains by the exchange rate.
+
+Rows are keyed by (symbol, currency): the same ticker listed in India and in
+the US is two different instruments and must not be merged.
+"""
+
+from typing import Any, Dict, List, Tuple
+
+
+def account_currency(account: Any) -> str:
+    """INR unless the account is explicitly a US one."""
+    return "USD" if account is not None and account.currency_type == "US" else "INR"
+
 
 class PortfolioAggregator:
 
     @classmethod
-    def aggregate_holdings(cls, accounts: List[Any], holdings: List[Any]) -> Dict[str, Any]:
+    def aggregate_holdings(
+        cls,
+        accounts: List[Any],
+        holdings: List[Any],
+        live_prices: Dict[Tuple[str, str], float],
+        usd_inr_rate: float,
+    ) -> Dict[str, Any]:
+        """Consolidates holdings across accounts into per-instrument INR rows.
+
+        `live_prices` is keyed by (symbol, country) in the instrument's native
+        currency, as returned by `fetch_live_prices_batch`.
+        """
         account_map = {acc.id: acc for acc in accounts}
-        symbol_map: Dict[str, Dict[str, Any]] = {}
+        grouped: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
-        for h in holdings:
-            symbol = h.symbol.upper()
-            acc = account_map.get(h.account_id)
-            if symbol not in symbol_map:
-                symbol_map[symbol] = {
-                    "symbol": symbol,
-                    "company_name": h.company_name or symbol,
-                    "total_quantity": 0.0,
-                    "total_invested": 0.0,
-                    "current_price": h.current_price or 0.0,
-                    "accounts_breakdown": []
-                }
+        for holding in holdings:
+            symbol = holding.symbol.upper()
+            account = account_map.get(holding.account_id)
+            currency = account_currency(account)
+            country = "US" if currency == "USD" else "IND"
+            to_inr = usd_inr_rate if currency == "USD" else 1.0
 
-            qty = float(h.quantity)
-            buy_price = float(h.avg_buy_price)
-            invested = qty * buy_price
+            native_price = live_prices.get((symbol, country), 0.0)
+            if native_price <= 0:
+                # No live quote — fall back to the last stored price, then to
+                # cost, so the row still shows a sane value instead of zero.
+                native_price = holding.current_price or holding.avg_buy_price or 0.0
 
-            symbol_map[symbol]["total_quantity"] += qty
-            symbol_map[symbol]["total_invested"] += invested
-            if h.current_price and h.current_price > 0:
-                symbol_map[symbol]["current_price"] = float(h.current_price)
+            quantity = float(holding.quantity)
+            avg_inr = float(holding.avg_buy_price) * to_inr
+            price_inr = native_price * to_inr
 
-            account_name = acc.name if acc else "Unknown"
-            currency_type = acc.currency_type if acc else "IND"
-
-            symbol_map[symbol]["accounts_breakdown"].append({
-                "account_id": h.account_id,
-                "account_name": account_name,
-                "currency_type": currency_type,
-                "quantity": qty,
-                "avg_buy_price": buy_price,
-                "invested": invested,
-                "current_value": qty * symbol_map[symbol]["current_price"]
-            })
-
-        consolidated_items = []
-        portfolio_total_invested = 0.0
-        portfolio_total_current_value = 0.0
-
-        for symbol, data in symbol_map.items():
-            qty = data["total_quantity"]
-            total_invested = data["total_invested"]
-            wacp = total_invested / qty if qty > 0 else 0.0
-            ltp = data["current_price"]
-            current_value = qty * ltp
-            pnl = current_value - total_invested
-            pnl_percent = (pnl / total_invested * 100.0) if total_invested > 0 else 0.0
-
-            portfolio_total_invested += total_invested
-            portfolio_total_current_value += current_value
-
-            consolidated_items.append({
+            row = grouped.setdefault((symbol, currency), {
                 "symbol": symbol,
-                "company_name": data["company_name"],
-                "total_quantity": qty,
-                "wacp": round(wacp, 2),
-                "current_price": round(ltp, 2),
-                "total_invested": round(total_invested, 2),
-                "current_value": round(current_value, 2),
-                "pnl": round(pnl, 2),
-                "pnl_percent": round(pnl_percent, 2),
-                "accounts_breakdown": data["accounts_breakdown"]
+                "company_name": holding.company_name or symbol,
+                "country": country,
+                "currency": currency,
+                "total_quantity": 0.0,
+                "total_invested_inr": 0.0,
+                "current_price_inr": price_inr,
+                "accounts_breakdown": [],
             })
 
-        consolidated_items.sort(key=lambda x: x["current_value"], reverse=True)
+            invested_inr = quantity * avg_inr
+            row["total_quantity"] += quantity
+            row["total_invested_inr"] += invested_inr
+            row["current_price_inr"] = price_inr
+            if holding.company_name and len(holding.company_name) > len(row["company_name"]):
+                row["company_name"] = holding.company_name
 
-        portfolio_pnl = portfolio_total_current_value - portfolio_total_invested
-        portfolio_pnl_percent = (portfolio_pnl / portfolio_total_invested * 100.0) if portfolio_total_invested > 0 else 0.0
+            row["accounts_breakdown"].append({
+                "account_id": holding.account_id,
+                "account_name": account.name if account else "Unknown",
+                "currency_type": account.currency_type if account else "IND",
+                "quantity": round(quantity, 4),
+                "avg_buy_price": round(float(holding.avg_buy_price), 2),
+                "avg_buy_price_inr": round(avg_inr, 2),
+                "invested_inr": round(invested_inr, 2),
+                "current_value_inr": round(quantity * price_inr, 2),
+            })
 
-        for item in consolidated_items:
-            item["allocation_percent"] = round((item["current_value"] / portfolio_total_current_value * 100.0), 2) if portfolio_total_current_value > 0 else 0.0
+        items = []
+        total_invested_inr = 0.0
+        total_current_inr = 0.0
 
+        for row in grouped.values():
+            quantity = row["total_quantity"]
+            invested_inr = row["total_invested_inr"]
+            price_inr = row["current_price_inr"]
+            current_inr = quantity * price_inr
+            pnl_inr = current_inr - invested_inr
+
+            total_invested_inr += invested_inr
+            total_current_inr += current_inr
+
+            items.append({
+                "symbol": row["symbol"],
+                "company_name": row["company_name"],
+                "country": row["country"],
+                "currency": row["currency"],
+                "total_quantity": round(quantity, 4),
+                # Weighted average cost, in INR.
+                "wacp_inr": round(invested_inr / quantity, 2) if quantity > 0 else 0.0,
+                "current_price_inr": round(price_inr, 2),
+                "total_invested_inr": round(invested_inr, 2),
+                "current_value_inr": round(current_inr, 2),
+                "pnl_inr": round(pnl_inr, 2),
+                "pnl_percent": round(pnl_inr / invested_inr * 100.0, 2) if invested_inr > 0 else 0.0,
+                "accounts_breakdown": row["accounts_breakdown"],
+            })
+
+        for item in items:
+            item["allocation_percent"] = (
+                round(item["current_value_inr"] / total_current_inr * 100.0, 2)
+                if total_current_inr > 0 else 0.0
+            )
+
+        items.sort(key=lambda i: i["current_value_inr"], reverse=True)
+
+        total_pnl_inr = total_current_inr - total_invested_inr
         return {
             "summary": {
-                "total_invested": round(portfolio_total_invested, 2),
-                "current_value": round(portfolio_total_current_value, 2),
-                "total_pnl": round(portfolio_pnl, 2),
-                "total_pnl_percent": round(portfolio_pnl_percent, 2),
-                "total_stocks_count": len(consolidated_items)
+                "total_invested_inr": round(total_invested_inr, 2),
+                "current_value_inr": round(total_current_inr, 2),
+                "total_pnl_inr": round(total_pnl_inr, 2),
+                "total_pnl_percent": (
+                    round(total_pnl_inr / total_invested_inr * 100.0, 2)
+                    if total_invested_inr > 0 else 0.0
+                ),
+                "total_stocks_count": len(items),
             },
-            "items": consolidated_items
+            "items": items,
         }
-
-def get_consolidated_portfolio(db: Session, account_ids: List[str] = None) -> Dict[str, Any]:
-    accounts = db.query(models.Account).all()
-    holdings = db.query(models.Holding).all()
-    return PortfolioAggregator.aggregate_holdings(accounts, holdings)

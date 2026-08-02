@@ -1,14 +1,15 @@
 import React from 'react';
-import { LayoutDashboard, PieChart, Wallet, RefreshCw, History, UserCheck } from 'lucide-react';
+import { LayoutDashboard, PieChart, Wallet, History, UserCheck } from 'lucide-react';
 
-export default function Navbar({ activeTab, setActiveTab, onSyncNow, syncing }) {
-  const navItems = [
-    { id: 'portfolio', label: 'Consolidated Portfolio', icon: LayoutDashboard },
-    { id: 'account-detail', label: 'Accounts Summary', icon: Wallet },
-    { id: 'rebalance', label: 'Target Rebalancing', icon: PieChart },
-    { id: 'accounts', label: 'Account Management', icon: UserCheck },
-    { id: 'logs', label: 'Sync Audit Logs', icon: History },
-  ];
+export const NAV_ITEMS = [
+  { id: 'portfolio', label: 'Consolidated Portfolio', icon: LayoutDashboard },
+  { id: 'account-detail', label: 'Accounts Summary', icon: Wallet },
+  { id: 'rebalance', label: 'Target Rebalancing', icon: PieChart },
+  { id: 'accounts', label: 'Account Management', icon: UserCheck },
+  { id: 'logs', label: 'Sync Audit Logs', icon: History },
+];
+
+export default function Navbar({ activeTab, setActiveTab }) {
 
   return (
     <header className="sticky top-0 z-40 glass-panel border-b border-slate-800/80 mb-6">
@@ -30,8 +31,8 @@ export default function Navbar({ activeTab, setActiveTab, onSyncNow, syncing }) 
         </div>
 
         {/* Navigation Tabs */}
-        <nav className="hidden lg:flex items-center space-x-1 bg-slate-900/60 p-1.5 rounded-xl border border-slate-800">
-          {navItems.map((item) => {
+        <nav className="flex flex-wrap items-center gap-1 bg-slate-900/60 p-1.5 rounded-xl border border-slate-800">
+          {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (
@@ -45,21 +46,11 @@ export default function Navbar({ activeTab, setActiveTab, onSyncNow, syncing }) 
                 }`}
               >
                 <Icon className={`h-3.5 w-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
-                <span>{item.label}</span>
+                <span className="hidden sm:inline">{item.label}</span>
               </button>
             );
           })}
         </nav>
-
-        {/* Sync Button */}
-        <button
-          onClick={onSyncNow}
-          disabled={syncing}
-          className="flex items-center space-x-2 bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-slate-950 font-semibold px-4 py-2 rounded-xl text-sm transition-all duration-200 shadow-lg shadow-emerald-500/20 active:scale-95 disabled:opacity-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${syncing ? 'animate-spin' : ''}`} />
-          <span>{syncing ? 'Syncing...' : 'Sync Now'}</span>
-        </button>
       </div>
     </header>
   );

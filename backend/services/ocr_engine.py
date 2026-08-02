@@ -1,7 +1,11 @@
 import io
 import re
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
+
+import numpy as np
 from PIL import Image
+
+from services.symbols import normalize_symbol
 
 RAPIDOCR_AVAILABLE = False
 try:
@@ -38,117 +42,12 @@ def clean_currency(val_str: str) -> float:
         return 0.0
 
 
-# US Stock Ticker dictionary for automatic resolution
-US_STOCK_TICKER_MAP = {
-    "APPLE": "AAPL",
-    "NVIDIA": "NVDA",
-    "TESLA": "TSLA",
-    "MICROSOFT": "MSFT",
-    "AMAZON": "AMZN",
-    "ALPHABET": "GOOGL",
-    "GOOGLE": "GOOGL",
-    "META": "META",
-    "FACEBOOK": "META",
-    "PALANTIR": "PLTR",
-    "ADOBE": "ADBE",
-    "NETFLIX": "NFLX",
-    "NOVO NORDISK": "NVO",
-    "NOVO-NORDISK": "NVO",
-    "OKLO": "OKLO",
-    "AMD": "AMD",
-    "BERKSHIRE": "BRK-B",
-    "COINBASE": "COIN",
-    "MICROSTRATEGY": "MSTR",
-    "DISNEY": "DIS",
-    "INTEL": "INTC",
-    "BROADCOM": "AVGO",
-    "QUALCOMM": "QCOM",
-}
-
-# Expanded dictionary mapping for Indian Stock Market Ticker symbols & ETFs
-STOCK_SYMBOL_MAPPING = {
-    "ICICI PRUDENT.NIFTY": "NIFTYIETF",
-    "ICICI PRUDENTIAL NIFTY": "NIFTYIETF",
-    "NIPPON INDIA ETF IT": "ITBEES",
-    "NIPPON INDIA ETF NIFTY IT": "ITBEES",
-    "NIPPON INDIA ETF BANK": "BANKBEES",
-    "MAX HEALTHCARE": "MAXHEALTH",
-    "MAXHEALTH": "MAXHEALTH",
-    "DCBBANK": "DCBBANK",
-    "DCB BANK": "DCBBANK",
-    "SBI CARDS AND PAY": "SBICARD",
-    "SBI CARDS": "SBICARD",
-    "SBI CARD": "SBICARD",
-    "STATE BANK OF INDIA": "SBIN",
-    "SBI": "SBIN",
-    "HOME FIRST FINANCE": "HOMEFIRST",
-    "HOME FIRST": "HOMEFIRST",
-    "IDFC FIRST BANK": "IDFCFIRSTB",
-    "JIO FINANCIAL SERV": "JIOFIN",
-    "JIO FINANCIAL SERVICES": "JIOFIN",
-    "JIO FINANCIAL": "JIOFIN",
-    "JIOFIN": "JIOFIN",
-    "KOVAI MEDICAL CENTER": "KOVAI",
-    "KOVAI MEDICAL": "KOVAI",
-    "AAVAS FINANCIERS": "AAVAS",
-    "AAVAS": "AAVAS",
-    "RELIANCE INDUSTRIES": "RELIANCE",
-    "RELIANCE IND": "RELIANCE",
-    "TATA CONSULTANCY SERVICES": "TCS",
-    "INFOSYS": "INFY",
-    "HDFC BANK": "HDFCBANK",
-    "ICICI BANK": "ICICIBANK",
-    "TATA MOTORS": "TATAMOTORS",
-    "BHARTI AIRTEL": "BHARTIARTL",
-    "ITC": "ITC",
-    "LARSEN & TOUBRO": "LT",
-    "KOTAK MAHINDRA BANK": "KOTAKBANK",
-    "AXIS BANK": "AXISBANK",
-    "HINDUSTAN UNILEVER": "HINDUNILVR",
-    "JUPITER LIFE LINE": "JLHL",
-    "MEDI ASSIST HEALTH": "MEDIASSIST",
-    "HERO MOTOCORP": "HEROMOTOCO",
-    "GLOBAL HEALTH": "MEDANTA",
-    "ANANT RAJ": "ANANTRAJ",
-    "OBEROI REALTY": "OBEROIRLTY",
-    "CAPRI GLOBAL CAPITAL": "CGCL",
-    "MOREALTY": "MOREALTY",
-    "TECHNO ELECTRIC": "TECHNOE",
-}
-
-
-def normalize_symbol(name_str: str) -> str:
-    cleaned = name_str.strip().upper()
-    
-    for key, sym in US_STOCK_TICKER_MAP.items():
-        if key in cleaned:
-            return sym
-
-    for key, sym in STOCK_SYMBOL_MAPPING.items():
-        if key in cleaned:
-            return sym
-
-    cleaned_name = re.sub(r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERVICES|ETF|INDEX|REIT|CLASS|CLAS|A|B|A/S)\b", "", cleaned).strip()
-
-    for key, sym in US_STOCK_TICKER_MAP.items():
-        if key in cleaned_name:
-            return sym
-
-    for key, sym in STOCK_SYMBOL_MAPPING.items():
-        if key in cleaned_name:
-            return sym
-
-    subbed = re.sub(r"[^A-Z0-9]", "", cleaned_name)
-    return subbed[:10] if subbed else "STOCK"
-
-
 class PortfolioOCREngine:
 
     @classmethod
     def extract_text_boxes(cls, image_bytes: bytes) -> List[Dict[str, Any]]:
         boxes = []
         image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        import numpy as np
         img_np = np.array(image)
 
         if RAPIDOCR_AVAILABLE:
@@ -406,7 +305,5 @@ class PortfolioOCREngine:
         return holdings
 
     @classmethod
-    def process_image(cls, image_bytes: bytes, broker_hint: Optional[str] = "GROWW") -> List[Dict[str, Any]]:
-        boxes = cls.extract_text_boxes(image_bytes)
-        holdings = cls.parse_holdings_from_boxes(boxes)
-        return holdings
+    def process_image(cls, image_bytes: bytes) -> List[Dict[str, Any]]:
+        return cls.parse_holdings_from_boxes(cls.extract_text_boxes(image_bytes))

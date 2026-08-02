@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, AlertTriangle, Trash2, Plus, X } from 'lucide-react';
+import { CheckCircle2, Trash2, Plus, X } from 'lucide-react';
 
 export default function VerificationModal({ accounts, initialHoldings, targetAccountId, onClose, onSave }) {
   const [holdings, setHoldings] = useState(initialHoldings || []);
