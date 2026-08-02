@@ -1,286 +1,348 @@
-import os
-import json
-from typing import List, Optional
-from datetime import datetime
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, Depends, HTTPException, File, UploadFile, Query
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
+from typing import List, Dict, Any, Optional
+import os
+import io
 
-from database import engine, Base, get_db
+from database import engine, get_db, Base
 import models
 import schemas
+from services.quote_service import fetch_live_prices_batch, fetch_usd_to_inr_rate
+from services.portfolio_engine import PortfolioAggregator
+from services.rebalancer import RebalanceEngine
 from services.ocr_engine import PortfolioOCREngine
 from services.deduplicator import AccountDeduplicator
-from services.portfolio_engine import get_consolidated_portfolio, get_single_account_detail
-from services.rebalancer import compute_rebalancing_plan
 
-# Initialize DB tables
 Base.metadata.create_all(bind=engine)
 
-app = FastAPI(title="Stock Portfolio Manager & Rebalancer (OCR Screenshot Ingestion)")
+app = FastAPI(title="Stocks Analyzer API")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+if os.path.exists(FRONTEND_DIST):
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIST, "assets")), name="assets")
 
-@app.on_event("startup")
-def on_startup():
-    db = next(get_db())
-    if db.query(models.Account).count() == 0:
-        demo_groww = models.Account(
-            name="Groww Account",
-            broker="GROWW",
-            sync_method="IMAGE_OCR"
-        )
-        demo_ind = models.Account(
-            name="INDmoney Account",
-            broker="INDMONEY",
-            sync_method="IMAGE_OCR"
-        )
-        db.add_all([demo_groww, demo_ind])
-        db.commit()
-        db.refresh(demo_groww)
-        db.refresh(demo_ind)
+@app.get("/")
+def read_root():
+    index_file = os.path.join(FRONTEND_DIST, "index.html")
+    if os.path.exists(index_file):
+        return FileResponse(index_file)
+    return {"message": "Stocks Analyzer API is running."}
 
-        # Seed initial target allocations
-        db.add_all([
-            models.TargetAllocation(symbol="ITBEES", target_percentage=30.0),
-            models.TargetAllocation(symbol="TCS", target_percentage=25.0),
-            models.TargetAllocation(symbol="INFY", target_percentage=15.0),
-            models.TargetAllocation(symbol="HDFCBANK", target_percentage=15.0),
-            models.TargetAllocation(symbol="TATAMOTORS", target_percentage=15.0),
-        ])
-        db.commit()
-
-@app.get("/api/accounts", response_model=List[schemas.AccountOut])
+@app.get("/api/accounts", response_model=List[schemas.AccountResponse])
 def get_accounts(db: Session = Depends(get_db)):
     return db.query(models.Account).all()
 
-@app.post("/api/accounts", response_model=schemas.AccountOut)
-def create_account(acc: schemas.AccountCreate, db: Session = Depends(get_db)):
-    new_acc = models.Account(
-        name=acc.name,
-        broker=acc.broker.upper(),
-        sync_method=acc.sync_method or "IMAGE_OCR"
+@app.post("/api/accounts", response_model=schemas.AccountResponse)
+def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)):
+    db_account = models.Account(
+        name=account.name,
+        broker=account.broker,
+        sync_method=account.sync_method or "IMAGE_OCR",
+        currency_type=account.currency_type or "IND"
     )
-    db.add(new_acc)
+    db.add(db_account)
     db.commit()
-    db.refresh(new_acc)
-    return new_acc
+    db.refresh(db_account)
+
+    if account.credentials:
+        for k, v in account.credentials.items():
+            if v:
+                cred = models.AccountCredential(
+                    account_id=db_account.id,
+                    key_name=k,
+                    value=v
+                )
+                db.add(cred)
+        db.commit()
+
+    return db_account
 
 @app.delete("/api/accounts/{account_id}")
 def delete_account(account_id: str, db: Session = Depends(get_db)):
-    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
-    if not acc:
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    db.delete(acc)
+    db.delete(account)
     db.commit()
     return {"message": "Account deleted successfully"}
 
-@app.post("/api/upload-ocr-image")
-async def upload_ocr_image(
-    file: UploadFile = File(...),
-    account_id: Optional[str] = Form(None),
-    broker_hint: Optional[str] = Form("GROWW"),
-    db: Session = Depends(get_db)
-):
-    return await upload_ocr_images(files=[file], account_id=account_id, broker_hint=broker_hint, db=db)
-
-@app.post("/api/upload-ocr-images")
-async def upload_ocr_images(
-    files: List[UploadFile] = File(...),
-    account_id: Optional[str] = Form(None),
-    broker_hint: Optional[str] = Form("GROWW"),
-    db: Session = Depends(get_db)
-):
-    """
-    Extracts stock holdings across MULTIPLE uploaded broker screenshot images.
-    Reads file content regardless of browser MIME type and merges all holdings with deduplication.
-    """
-    all_raw_holdings = []
-    processed_filenames = []
-
-    for f in files:
-        try:
-            content = await f.read()
-            if content and len(content) > 0:
-                extracted = PortfolioOCREngine.process_image(content, broker_hint=broker_hint)
-                all_raw_holdings.extend(extracted)
-                processed_filenames.append(f.filename)
-        except Exception as e:
-            print(f"[OCR Error] Failed to parse screenshot {f.filename}: {e}")
-
-    # Deduplicate batch across multiple screenshots
-    combined_incoming, batch_warnings = AccountDeduplicator.process_deduplication(
-        existing_holdings=[],
-        incoming_holdings=all_raw_holdings,
-        strategy="MERGE"
-    )
-
-    warnings = batch_warnings
-    final_holdings = combined_incoming
-
-    valid_account_id = account_id.strip() if (account_id and account_id.strip()) else None
-
-    if valid_account_id:
-        existing_models = db.query(models.Holding).filter(models.Holding.account_id == valid_account_id).all()
-        existing_dicts = [
-            {
-                "symbol": h.symbol,
-                "company_name": h.company_name,
-                "quantity": h.quantity,
-                "avg_buy_price": h.avg_buy_price,
-                "current_price": h.current_price,
-            }
-            for h in existing_models
-        ]
-        
-        final_holdings, warnings = AccountDeduplicator.process_deduplication(
-            existing_holdings=existing_dicts,
-            incoming_holdings=combined_incoming,
-            strategy="MERGE"
-        )
-
-    return {
-        "filenames": processed_filenames,
-        "account_id": valid_account_id,
-        "broker_hint": broker_hint,
-        "extracted_count": len(final_holdings),
-        "holdings": final_holdings,
-        "warnings": warnings
-    }
-
-@app.post("/api/verify-save-holdings")
-def verify_and_save_holdings(
-    payload: schemas.HoldingsBatchVerify,
-    strategy: Optional[str] = "OVERWRITE",
-    db: Session = Depends(get_db)
-):
-    acc = db.query(models.Account).filter(models.Account.id == payload.account_id).first()
-    if not acc:
+@app.get("/api/accounts/{account_id}/detail")
+def get_single_account_detail(account_id: str, db: Session = Depends(get_db)):
+    account = db.query(models.Account).filter(models.Account.id == account_id).first()
+    if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    if strategy.upper() == "OVERWRITE":
-        db.query(models.Holding).filter(models.Holding.account_id == payload.account_id).delete()
+    holdings = db.query(models.Holding).filter(models.Holding.account_id == account_id).all()
+    symbols = [h.symbol for h in holdings]
+    live_quotes = fetch_live_prices_batch(symbols) if symbols else {}
+    usd_inr_rate = fetch_usd_to_inr_rate()
 
-    for item in payload.holdings:
-        existing = db.query(models.Holding).filter(
-            models.Holding.account_id == payload.account_id,
-            models.Holding.symbol == item.symbol.upper()
-        ).first()
+    total_invested = 0.0
+    total_current = 0.0
+    items = []
 
-        if existing:
-            existing.company_name = item.company_name or item.symbol
-            existing.quantity = item.quantity
-            existing.avg_buy_price = item.avg_buy_price
-            existing.current_price = item.current_price or item.avg_buy_price
-            existing.is_user_verified = True
-            existing.updated_at = datetime.utcnow()
-        else:
-            new_h = models.Holding(
-                account_id=payload.account_id,
-                symbol=item.symbol.upper(),
-                company_name=item.company_name or item.symbol,
-                quantity=item.quantity,
-                avg_buy_price=item.avg_buy_price,
-                current_price=item.current_price or item.avg_buy_price,
-                is_user_verified=True
-            )
-            db.add(new_h)
+    is_us_account = (account.currency_type == "US")
+    currency_symbol = "$" if is_us_account else "₹"
 
-    acc.last_synced_at = datetime.utcnow()
-    log = models.SyncLog(
-        account_id=acc.id,
-        status="SUCCESS",
-        message=f"Verified and saved {len(payload.holdings)} holdings via image OCR screenshot."
-    )
-    db.add(log)
-    db.commit()
+    for h in holdings:
+        live_price = live_quotes.get(h.symbol) or live_quotes.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
+        invested_val = h.quantity * h.avg_buy_price
+        current_val = h.quantity * live_price
+        pnl_val = current_val - invested_val
+        pnl_pct = (pnl_val / invested_val * 100) if invested_val > 0 else 0.0
 
-    return {"message": "Holdings saved successfully", "count": len(payload.holdings)}
+        total_invested += invested_val
+        total_current += current_val
 
-@app.get("/api/portfolio/consolidated")
-def get_consolidated_view(account_ids: Optional[str] = None, db: Session = Depends(get_db)):
-    parsed_ids = account_ids.split(",") if account_ids else None
-    return get_consolidated_portfolio(db, parsed_ids)
+        item_dict = {
+            "id": h.id,
+            "symbol": h.symbol,
+            "company_name": h.company_name,
+            "quantity": round(h.quantity, 4),
+            "avg_buy_price": round(h.avg_buy_price, 2),
+            "live_current_price": round(live_price, 2),
+            "invested_value": round(invested_val, 2),
+            "current_value": round(current_val, 2),
+            "pnl": round(pnl_val, 2),
+            "pnl_percent": round(pnl_pct, 2),
+            "is_user_verified": h.is_user_verified
+        }
 
-@app.get("/api/accounts/{account_id}/detail")
-def get_account_detail(account_id: str, db: Session = Depends(get_db)):
-    return get_single_account_detail(db, account_id)
+        if is_us_account:
+            item_dict["invested_value_inr"] = round(invested_val * usd_inr_rate, 2)
+            item_dict["current_value_inr"] = round(current_val * usd_inr_rate, 2)
+            item_dict["pnl_inr"] = round(pnl_val * usd_inr_rate, 2)
+
+        items.append(item_dict)
+
+    total_pnl = total_current - total_invested
+    total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0.0
+
+    summary_dict = {
+        "invested_value": round(total_invested, 2),
+        "current_value": round(total_current, 2),
+        "holding_count": len(items),
+        "pnl": round(total_pnl, 2),
+        "pnl_percent": round(total_pnl_pct, 2),
+        "currency_type": account.currency_type or "IND",
+        "currency_symbol": currency_symbol
+    }
+
+    if is_us_account:
+        summary_dict["usd_to_inr_rate"] = round(usd_inr_rate, 2)
+        summary_dict["invested_value_inr"] = round(total_invested * usd_inr_rate, 2)
+        summary_dict["current_value_inr"] = round(total_current * usd_inr_rate, 2)
+        summary_dict["pnl_inr"] = round(total_pnl * usd_inr_rate, 2)
+
+    return {
+        "account_id": account.id,
+        "account_name": account.name,
+        "broker": account.broker,
+        "currency_type": account.currency_type or "IND",
+        "last_synced_at": account.last_synced_at,
+        "summary": summary_dict,
+        "items": items
+    }
 
 @app.put("/api/holdings/{holding_id}")
-def update_holding_item(holding_id: str, payload: schemas.HoldingUpdate, db: Session = Depends(get_db)):
+def update_holding(holding_id: str, holding_update: schemas.HoldingUpdate, db: Session = Depends(get_db)):
     h = db.query(models.Holding).filter(models.Holding.id == holding_id).first()
     if not h:
         raise HTTPException(status_code=404, detail="Holding not found")
 
-    if payload.symbol is not None:
-        h.symbol = payload.symbol.upper().strip()
-    if payload.company_name is not None:
-        h.company_name = payload.company_name.strip()
-    if payload.quantity is not None:
-        h.quantity = payload.quantity
-    if payload.avg_buy_price is not None:
-        h.avg_buy_price = payload.avg_buy_price
-    if payload.current_price is not None:
-        h.current_price = payload.current_price
-    if payload.is_user_verified is not None:
-        h.is_user_verified = payload.is_user_verified
+    if holding_update.symbol is not None:
+        h.symbol = holding_update.symbol.strip().upper()
+    if holding_update.company_name is not None:
+        h.company_name = holding_update.company_name.strip()
+    if holding_update.quantity is not None:
+        h.quantity = holding_update.quantity
+    if holding_update.avg_buy_price is not None:
+        h.avg_buy_price = holding_update.avg_buy_price
+    if holding_update.current_price is not None:
+        h.current_price = holding_update.current_price
+    if holding_update.is_user_verified is not None:
+        h.is_user_verified = holding_update.is_user_verified
 
-    h.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(h)
-    return {"message": "Holding updated successfully", "holding": {
-        "id": h.id,
-        "symbol": h.symbol,
-        "company_name": h.company_name,
-        "quantity": h.quantity,
-        "avg_buy_price": h.avg_buy_price,
-        "current_price": h.current_price,
-        "is_user_verified": h.is_user_verified
-    }}
+    return {"message": "Holding updated successfully", "holding": h}
 
-@app.get("/api/rebalance")
-def get_rebalance_matrix(account_ids: Optional[str] = None, db: Session = Depends(get_db)):
-    parsed_ids = account_ids.split(",") if account_ids else None
-    return compute_rebalancing_plan(db, parsed_ids)
+@app.post("/api/upload-ocr-images")
+async def upload_ocr_images(
+    files: List[UploadFile] = File(...),
+    account_id: Optional[str] = Query(None),
+    broker_hint: Optional[str] = Query("GROWW"),
+    db: Session = Depends(get_db)
+):
+    all_raw_holdings = []
+    
+    for f in files:
+        contents = await f.read()
+        extracted = PortfolioOCREngine.process_image(contents, broker_hint=broker_hint)
+        if extracted:
+            all_raw_holdings.extend(extracted)
 
-@app.get("/api/target-allocations", response_model=List[schemas.TargetAllocationOut])
+    deduped_holdings = AccountDeduplicator.deduplicate_holdings(all_raw_holdings)
+    symbols = [h['symbol'] for h in deduped_holdings]
+    live_prices = fetch_live_prices_batch(symbols) if symbols else {}
+    
+    enriched_holdings = []
+    for h in deduped_holdings:
+        sym = h['symbol']
+        lp = live_prices.get(sym) or live_prices.get(sym.upper()) or h.get('current_price') or h['avg_buy_price']
+        h['current_price'] = lp
+        enriched_holdings.append(h)
+
+    return {
+        "status": "SUCCESS",
+        "processed_files_count": len(files),
+        "total_holdings_parsed": len(enriched_holdings),
+        "holdings": enriched_holdings
+    }
+
+@app.post("/api/verify-save-holdings")
+def verify_and_save_holdings(
+    request: schemas.VerifyHoldingsRequest,
+    strategy: str = Query("MERGE", description="MERGE or OVERWRITE"),
+    db: Session = Depends(get_db)
+):
+    account = db.query(models.Account).filter(models.Account.id == request.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    symbols = [h.symbol for h in request.holdings]
+    live_prices = fetch_live_prices_batch(symbols) if symbols else {}
+
+    if strategy == "OVERWRITE":
+        db.query(models.Holding).filter(models.Holding.account_id == request.account_id).delete()
+        db.commit()
+
+        for h in request.holdings:
+            lp = live_prices.get(h.symbol) or live_prices.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
+            db_h = models.Holding(
+                account_id=request.account_id,
+                symbol=h.symbol,
+                company_name=h.company_name,
+                quantity=h.quantity,
+                avg_buy_price=h.avg_buy_price,
+                current_price=lp
+            )
+            db.add(db_h)
+
+    else:
+        existing_holdings = db.query(models.Holding).filter(models.Holding.account_id == request.account_id).all()
+        existing_map = {eh.symbol: eh for eh in existing_holdings}
+
+        for h in request.holdings:
+            lp = live_prices.get(h.symbol) or live_prices.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
+            if h.symbol in existing_map:
+                eh = existing_map[h.symbol]
+                eh.quantity = h.quantity
+                eh.avg_buy_price = h.avg_buy_price
+                eh.current_price = lp
+            else:
+                db_h = models.Holding(
+                    account_id=request.account_id,
+                    symbol=h.symbol,
+                    company_name=h.company_name,
+                    quantity=h.quantity,
+                    avg_buy_price=h.avg_buy_price,
+                    current_price=lp
+                )
+                db.add(db_h)
+
+    account.last_synced_at = models.datetime.now(models.timezone.utc)
+    sync_log = models.SyncLog(
+        account_id=account.id,
+        status="SUCCESS",
+        holdings_count=len(request.holdings)
+    )
+    db.add(sync_log)
+    db.commit()
+
+    return {"message": "Holdings saved successfully", "count": len(request.holdings)}
+
+@app.get("/api/portfolio/consolidated")
+def get_consolidated_portfolio(db: Session = Depends(get_db)):
+    accounts = db.query(models.Account).all()
+    holdings = db.query(models.Holding).all()
+    
+    symbols = [h.symbol for h in holdings]
+    live_prices = fetch_live_prices_batch(symbols) if symbols else {}
+    usd_inr_rate = fetch_usd_to_inr_rate()
+
+    # Convert US Stock holdings to INR for consolidated portfolio calculation
+    updated_holdings = []
+    for h in holdings:
+        acc = db.query(models.Account).filter(models.Account.id == h.account_id).first()
+        is_us = (acc and acc.currency_type == "US")
+        raw_price = live_prices.get(h.symbol) or live_prices.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
+        
+        # If US account, convert USD price & avg price to INR
+        if is_us:
+            h.current_price = raw_price * usd_inr_rate
+        else:
+            h.current_price = raw_price
+            
+        updated_holdings.append(h)
+
+    return PortfolioAggregator.aggregate_holdings(accounts, updated_holdings)
+
+@app.get("/api/target-allocations", response_model=List[schemas.TargetAllocationResponse])
 def get_target_allocations(db: Session = Depends(get_db)):
     return db.query(models.TargetAllocation).all()
 
-@app.post("/api/target-allocations")
-def update_target_allocations(targets: List[schemas.TargetAllocationCreate], db: Session = Depends(get_db)):
-    db.query(models.TargetAllocation).delete()
-    for t in targets:
-        if t.target_percentage > 0:
-            db.add(models.TargetAllocation(
-                symbol=t.symbol.upper(),
-                target_percentage=t.target_percentage
-            ))
+@app.post("/api/target-allocations", response_model=schemas.TargetAllocationResponse)
+def create_target_allocation(alloc: schemas.TargetAllocationBase, db: Session = Depends(get_db)):
+    existing = db.query(models.TargetAllocation).filter(models.TargetAllocation.symbol == alloc.symbol).first()
+    if existing:
+        existing.target_percentage = alloc.target_percentage
+        existing.company_name = alloc.company_name
+        existing.asset_class = alloc.asset_class or "EQUITY"
+        db.commit()
+        db.refresh(existing)
+        return existing
+    
+    db_alloc = models.TargetAllocation(
+        symbol=alloc.symbol,
+        company_name=alloc.company_name,
+        target_percentage=alloc.target_percentage,
+        asset_class=alloc.asset_class or "EQUITY"
+    )
+    db.add(db_alloc)
     db.commit()
-    return {"message": "Target allocations updated successfully"}
+    db.refresh(db_alloc)
+    return db_alloc
 
-@app.get("/api/sync-logs", response_model=List[schemas.SyncLogOut])
+@app.delete("/api/target-allocations/{alloc_id}")
+def delete_target_allocation(alloc_id: str, db: Session = Depends(get_db)):
+    alloc = db.query(models.TargetAllocation).filter(models.TargetAllocation.id == alloc_id).first()
+    if not alloc:
+        raise HTTPException(status_code=404, detail="Target allocation not found")
+    db.delete(alloc)
+    db.commit()
+    return {"message": "Target allocation deleted"}
+
+@app.get("/api/rebalance")
+def get_rebalance_recommendations(db: Session = Depends(get_db)):
+    accounts = db.query(models.Account).all()
+    holdings = db.query(models.Holding).all()
+    targets = db.query(models.TargetAllocation).all()
+
+    symbols = [h.symbol for h in holdings]
+    live_prices = fetch_live_prices_batch(symbols) if symbols else {}
+    usd_inr_rate = fetch_usd_to_inr_rate()
+
+    for h in holdings:
+        acc = db.query(models.Account).filter(models.Account.id == h.account_id).first()
+        is_us = (acc and acc.currency_type == "US")
+        raw_price = live_prices.get(h.symbol) or live_prices.get(h.symbol.upper()) or h.current_price or h.avg_buy_price
+        h.current_price = (raw_price * usd_inr_rate) if is_us else raw_price
+
+    return RebalanceEngine.calculate_rebalance(accounts, holdings, targets)
+
+@app.get("/api/sync-logs")
 def get_sync_logs(db: Session = Depends(get_db)):
-    return db.query(models.SyncLog).order_by(models.SyncLog.created_at.desc()).limit(20).all()
-
-# Serve static frontend dist assets directly on FastAPI
-DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../frontend/dist"))
-if os.path.exists(DIST_DIR):
-    app.mount("/assets", StaticFiles(directory=os.path.join(DIST_DIR, "assets")), name="assets")
-
-    @app.get("/{full_path:path}")
-    def serve_frontend(full_path: str):
-        if full_path.startswith("api"):
-            raise HTTPException(status_code=404, detail="API route not found")
-        file_path = os.path.join(DIST_DIR, full_path)
-        if os.path.exists(file_path) and os.path.isfile(file_path):
-            return FileResponse(file_path)
-        return FileResponse(os.path.join(DIST_DIR, "index.html"))
+    return db.query(models.SyncLog).order_by(models.SyncLog.synced_at.desc()).limit(50).all()

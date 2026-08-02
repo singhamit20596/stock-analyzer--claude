@@ -1,40 +1,40 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import List, Optional
 from datetime import datetime
 
-class AccountCreate(BaseModel):
+class AccountBase(BaseModel):
     name: str
     broker: str
-    auth_credentials: Optional[str] = None
-    sync_method: Optional[str] = "API"
+    sync_method: Optional[str] = "IMAGE_OCR"
+    currency_type: Optional[str] = "IND"  # "IND" (₹ INR) or "US" ($ USD)
 
-class AccountOut(BaseModel):
+class AccountCreate(AccountBase):
+    credentials: Optional[dict] = {}
+
+class AccountResponse(AccountBase):
     id: str
-    name: str
-    broker: str
-    auth_credentials: Optional[str] = None
-    sync_method: str
-    last_synced_at: Optional[datetime] = None
+    is_active: bool
     created_at: datetime
+    last_synced_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
 
-class HoldingData(BaseModel):
+class HoldingBase(BaseModel):
     symbol: str
-    company_name: Optional[str] = ""
+    company_name: str
     quantity: float
     avg_buy_price: float
     current_price: Optional[float] = 0.0
 
-class HoldingCreate(BaseModel):
+class HoldingResponse(HoldingBase):
+    id: str
     account_id: str
-    symbol: str
-    company_name: Optional[str] = ""
-    quantity: float
-    avg_buy_price: float
-    current_price: Optional[float] = 0.0
-    is_user_verified: Optional[bool] = True
+    is_user_verified: bool = False
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
 
 class HoldingUpdate(BaseModel):
     symbol: Optional[str] = None
@@ -44,43 +44,22 @@ class HoldingUpdate(BaseModel):
     current_price: Optional[float] = None
     is_user_verified: Optional[bool] = None
 
-class HoldingOut(BaseModel):
-    id: str
-    account_id: str
+class TargetAllocationBase(BaseModel):
     symbol: str
-    company_name: Optional[str] = None
-    quantity: float
-    avg_buy_price: float
-    current_price: float
-    is_user_verified: bool
-    updated_at: datetime
+    company_name: str
+    target_percentage: float
+    asset_class: Optional[str] = "EQUITY"
+
+class TargetAllocationResponse(TargetAllocationBase):
+    id: str
 
     class Config:
         from_attributes = True
 
-class HoldingsBatchVerify(BaseModel):
-    account_id: str
-    holdings: List[HoldingData]
-
-class TargetAllocationCreate(BaseModel):
-    symbol: str
-    target_percentage: float
-
-class TargetAllocationOut(BaseModel):
-    id: str
-    symbol: str
-    target_percentage: float
-    updated_at: datetime
-
-    class Config:
-        from_attributes = True
-
-class SyncLogOut(BaseModel):
-    id: str
+class OCRIngestRequest(BaseModel):
+    broker_hint: Optional[str] = "GROWW"
     account_id: Optional[str] = None
-    status: str
-    message: Optional[str] = None
-    created_at: datetime
 
-    class Config:
-        from_attributes = True
+class VerifyHoldingsRequest(BaseModel):
+    account_id: str
+    holdings: List[HoldingBase]

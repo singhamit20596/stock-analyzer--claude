@@ -5,7 +5,9 @@ from typing import Dict, Any, List
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 PRICE_CACHE: Dict[str, Dict[str, Any]] = {}
-CACHE_TTL_SECONDS = 60  # 1 minute cache
+CACHE_TTL_SECONDS = 120  # 2 minute cache
+
+USD_INR_CACHE: Dict[str, Any] = {"rate": 86.50, "timestamp": 0}
 
 # Known US Stock Ticker set for automatic US market routing
 KNOWN_US_TICKERS = {
@@ -63,52 +65,80 @@ def resolve_nse_symbol(symbol: str) -> str:
     sym = symbol.strip().upper()
     return NSE_SYMBOL_MAP.get(sym, sym)
 
+def fetch_usd_to_inr_rate() -> float:
+    """Fetches real-time USD to INR conversion rate from Yahoo Finance / Google Finance."""
+    now = time.time()
+    if (now - USD_INR_CACHE["timestamp"]) < 300:  # 5-minute cache
+        return USD_INR_CACHE["rate"]
+
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    }
+
+    # Tier 1: Yahoo Finance USDINR=X
+    try:
+        url = 'https://query1.finance.yahoo.com/v8/finance/chart/USDINR=X?interval=1m&range=1d'
+        r = httpx.get(url, headers=headers, timeout=2.0)
+        if r.status_code == 200:
+            meta = r.json().get('chart', {}).get('result', [{}])[0].get('meta', {})
+            price = meta.get('regularMarketPrice') or meta.get('previousClose')
+            if price and float(price) > 0:
+                val = float(price)
+                USD_INR_CACHE["rate"] = val
+                USD_INR_CACHE["timestamp"] = now
+                return val
+    except Exception:
+        pass
+
+    # Tier 2: Google Finance USD-INR
+    try:
+        client = httpx.Client(follow_redirects=True, headers=headers)
+        url = 'https://www.google.com/finance/quote/USD-INR'
+        r = client.get(url, timeout=2.0)
+        m = re.search(r'data-last-price="([\d\.]+)"', r.text)
+        if not m:
+            m = re.search(r'class="YMlKec fxfaPl">\s*([\d,]+\.?\d*)', r.text)
+        if m:
+            val = float(m.group(1).replace(',', ''))
+            if val > 0:
+                USD_INR_CACHE["rate"] = val
+                USD_INR_CACHE["timestamp"] = now
+                return val
+    except Exception:
+        pass
+
+    return USD_INR_CACHE["rate"]
+
 def fetch_single_quote(symbol: str) -> float:
     sym = symbol.strip().upper()
     now = time.time()
     
-    # Check 1-minute cache
+    # Check cache
     if sym in PRICE_CACHE and (now - PRICE_CACHE[sym]["timestamp"]) < CACHE_TTL_SECONDS:
         return PRICE_CACHE[sym]["price"]
 
     headers = {
         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
     }
 
     # 1. US Stock Market Tickers (Google Finance NASDAQ / NYSE Scraper & Yahoo Finance)
     if sym in KNOWN_US_TICKERS or (len(sym) <= 5 and sym.isalpha() and sym not in {'SBIN', 'ITC', 'IEX', 'KOVAI', 'AAVAS', 'TCS', 'INFY', 'LT', 'NIFTY', 'CANBK'}):
-        # Tier A: Google Finance US Exchanges
-        client = httpx.Client(follow_redirects=True, headers=headers)
-        for exch in ['NASDAQ', 'NYSE']:
-            try:
-                gf_url = f"https://www.google.com/finance/quote/{sym}:{exch}"
-                r = client.get(gf_url, timeout=2.5)
-                m = re.search(r'data-last-price="([\d\.]+)"', r.text)
-                if not m:
-                    m = re.search(r'class="YMlKec fxfaPl">\s*\$?\s*([\d,]+\.?\d*)', r.text)
-                if m:
-                    val = float(m.group(1).replace(',', ''))
-                    if val > 0:
-                        PRICE_CACHE[sym] = {"price": val, "timestamp": now}
-                        return val
-            except Exception:
-                pass
-
-        # Tier B: Yahoo Finance US
         try:
-            url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
-            r = httpx.get(url, headers=headers, timeout=2.5)
-            if r.status_code == 200:
-                res_json = r.json()
-                chart = res_json.get('chart', {}).get('result', [])
-                if chart:
-                    meta = chart[0].get('meta', {})
-                    price = meta.get('regularMarketPrice') or meta.get('previousClose')
-                    if price and float(price) > 0:
-                        val = float(price)
-                        PRICE_CACHE[sym] = {"price": val, "timestamp": now}
-                        return val
+            client = httpx.Client(follow_redirects=True, headers=headers, timeout=1.5)
+            for exch in ['NASDAQ', 'NYSE']:
+                try:
+                    gf_url = f"https://www.google.com/finance/quote/{sym}:{exch}"
+                    r = client.get(gf_url)
+                    m = re.search(r'data-last-price="([\d\.]+)"', r.text)
+                    if not m:
+                        m = re.search(r'class="YMlKec fxfaPl">\s*\$?\s*([\d,]+\.?\d*)', r.text)
+                    if m:
+                        val = float(m.group(1).replace(',', ''))
+                        if val > 0:
+                            PRICE_CACHE[sym] = {"price": val, "timestamp": now}
+                            return val
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -116,7 +146,7 @@ def fetch_single_quote(symbol: str) -> float:
     resolved_sym = resolve_nse_symbol(sym)
     try:
         url = f"https://groww.in/v1/api/stocks_data/v1/tr_live_prices/exchange/NSE/segment/CASH/{resolved_sym}/latest"
-        r = httpx.get(url, headers=headers, timeout=2.5)
+        r = httpx.get(url, headers=headers, timeout=1.5)
         if r.status_code == 200:
             data = r.json()
             ltp = data.get('ltp') or data.get('close')
@@ -132,7 +162,7 @@ def fetch_single_quote(symbol: str) -> float:
     try:
         ticker = f"{resolved_sym}.NS"
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval=1m&range=1d"
-        r = httpx.get(url, headers=headers, timeout=2.5)
+        r = httpx.get(url, headers=headers, timeout=1.5)
         if r.status_code == 200:
             res_json = r.json()
             chart = res_json.get('chart', {}).get('result', [])
@@ -146,29 +176,13 @@ def fetch_single_quote(symbol: str) -> float:
     except Exception:
         pass
 
-    # 4. Google Finance NSE Open Page Scraper
-    try:
-        client = httpx.Client(follow_redirects=True, headers=headers)
-        gf_url = f"https://www.google.com/finance/quote/{resolved_sym}:NSE"
-        r = client.get(gf_url, timeout=2.5)
-        m = re.search(r'data-last-price="([\d\.]+)"', r.text)
-        if not m:
-            m = re.search(r'class="YMlKec fxfaPl">\s*₹?\s*([\d,]+\.?\d*)', r.text)
-        if m:
-            val = float(m.group(1).replace(',', ''))
-            if val > 0:
-                PRICE_CACHE[sym] = {"price": val, "timestamp": now}
-                return val
-    except Exception:
-        pass
-
     return 0.0
 
 def fetch_live_prices_batch(symbols: List[str]) -> Dict[str, float]:
     results = {}
     unique_symbols = list(set(sym.strip().upper() for sym in symbols if sym))
 
-    with ThreadPoolExecutor(max_workers=min(10, max(1, len(unique_symbols)))) as executor:
+    with ThreadPoolExecutor(max_workers=min(15, max(1, len(unique_symbols)))) as executor:
         future_to_sym = {executor.submit(fetch_single_quote, sym): sym for sym in unique_symbols}
         for future in as_completed(future_to_sym):
             raw_sym = future_to_sym[future]
