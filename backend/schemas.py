@@ -23,7 +23,7 @@ class AccountResponse(AccountBase):
 
 class HoldingBase(BaseModel):
     symbol: str
-    company_name: str
+    company_name: Optional[str] = ""
     quantity: float
     avg_buy_price: float
     current_price: Optional[float] = 0.0
@@ -45,7 +45,7 @@ class HoldingUpdate(BaseModel):
 
 class TargetAllocationBase(BaseModel):
     symbol: str
-    company_name: str
+    company_name: Optional[str] = ""
     target_percentage: float
     asset_class: Optional[str] = "EQUITY"
 

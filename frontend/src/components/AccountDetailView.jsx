@@ -38,13 +38,13 @@ export default function AccountDetailView({ accounts }) {
     return (
       <div className="glass-panel p-8 rounded-2xl border border-slate-800 text-center space-y-3">
         <AlertCircle className="w-8 h-8 text-amber-400 mx-auto" />
-        <h3 className="text-base font-bold text-slate-200">No Broker Accounts Added Yet</h3>
+        <h3 className="text-base font-bold text-slate-200">No Portfolio Accounts Added Yet</h3>
         <p className="text-xs text-slate-400">Add an account from the "Account Ingestion" tab to view individual account metrics.</p>
       </div>
     );
   }
 
-  const { summary, items, account_name, broker, currency_type } = accountData || {
+  const { summary, items, account_name, currency_type } = accountData || {
     summary: { invested_value: 0, current_value: 0, holding_count: 0, pnl: 0, pnl_percent: 0 },
     items: [],
     currency_type: 'IND'
@@ -92,7 +92,7 @@ export default function AccountDetailView({ accounts }) {
           >
             {accounts.map((acc) => (
               <option key={acc.id} value={acc.id}>
-                {acc.name} ({acc.broker} - {acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
+                {acc.name} ({acc.currency_type === 'US' ? 'US $' : 'IND ₹'})
               </option>
             ))}
           </select>
@@ -197,7 +197,7 @@ export default function AccountDetailView({ accounts }) {
             <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center">
               <div>
                 <h3 className="text-sm font-bold text-slate-200">Holdings Breakdown for {account_name}</h3>
-                <p className="text-xs text-slate-400">Broker: <span className="font-semibold text-slate-300">{broker}</span> • Format: <span className="font-semibold text-indigo-400">{isUSAccount ? 'US Stocks ($ USD)' : 'Indian Stocks (₹ INR)'}</span></p>
+                <p className="text-xs text-slate-400">Account Type: <span className="font-semibold text-indigo-400">{isUSAccount ? 'US Stocks ($ USD)' : 'Indian Stocks (₹ INR)'}</span></p>
               </div>
               <span className="text-xs text-indigo-400 font-semibold flex items-center">
                 <Globe className="w-3.5 h-3.5 mr-1" /> Real-Time Market Quotes Active
