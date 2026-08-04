@@ -199,3 +199,70 @@ def fetch_live_prices_batch(symbol_countries: Iterable[Tuple[str, str]]) -> Dict
             except Exception:
                 results[key] = 0.0
     return results
+
+
+# Sector cache: {(symbol, country): "Technology", ...}. A company's sector
+# effectively never changes, so this has no TTL.
+SECTOR_CACHE: Dict[Tuple[str, str], str] = {}
+
+
+# Sector lives in an inlined JS payload on the profile page. Yahoo's
+# assetProfile endpoint would be cleaner but answers 429 to unauthenticated
+# callers.
+_SECTOR_PATTERN = re.compile(r'\{t:"Sector",v:"([^"]+)"')
+
+
+def _scrape_sector(path: str) -> str:
+    try:
+        response = httpx.get(f"https://stockanalysis.com/{path}",
+                             headers=BROWSER_HEADERS, timeout=PAGE_TIMEOUT,
+                             follow_redirects=True)
+        if response.status_code == 200:
+            match = _SECTOR_PATTERN.search(response.text)
+            if match:
+                return match.group(1)
+    except Exception:
+        pass
+    return ""
+
+
+def fetch_sector(symbol: str, country: str = "IND") -> str:
+    """Sector for one stock, cached for the process lifetime. "" if unknown."""
+    sym = resolve_quote_symbol(symbol) or symbol.strip().upper()
+    country_code = (country or "IND").upper()
+    cache_key = (symbol.strip().upper(), country_code)
+
+    if cache_key in SECTOR_CACHE:
+        return SECTOR_CACHE[cache_key]
+
+    if country_code == "US":
+        sector = _scrape_sector(f"stocks/{sym}/")
+    else:
+        sector = _scrape_sector(f"quote/nse/{sym}/") or _scrape_sector(f"quote/bse/{sym}/")
+
+    SECTOR_CACHE[cache_key] = sector
+    return sector
+
+
+def fetch_sectors_batch(symbol_countries: Iterable[Tuple[str, str]]) -> Dict[Tuple[str, str], str]:
+    """Sectors for many symbols in parallel, keyed by (symbol, country)."""
+    wanted = {
+        (sym.strip().upper(), (country or "IND").upper())
+        for sym, country in symbol_countries
+        if sym and sym.strip()
+    }
+    missing = [k for k in wanted if k not in SECTOR_CACHE]
+
+    if missing:
+        with ThreadPoolExecutor(max_workers=min(15, len(missing))) as executor:
+            futures = {
+                executor.submit(fetch_sector, sym, country): (sym, country)
+                for sym, country in missing
+            }
+            for future in futures:
+                try:
+                    future.result()
+                except Exception:
+                    pass
+
+    return {k: SECTOR_CACHE.get(k, "") for k in wanted}

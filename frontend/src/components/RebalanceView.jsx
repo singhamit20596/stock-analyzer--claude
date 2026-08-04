@@ -1,294 +1,543 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import {
-  PieChart, Save, AlertCircle, CheckCircle2, ArrowUpRight, ArrowDownRight,
-  MinusCircle, Plus, RefreshCw, Trash2
-} from 'lucide-react';
+import { Target, Plus, Trash2, Edit2, X, AlertCircle, ArrowRight, Check } from 'lucide-react';
 
-export default function RebalanceView({ targetAllocations, onSaveTargetAllocation, onDeleteTargetAllocation }) {
-  const [targets, setTargets] = useState([]);
-  const [newSymbol, setNewSymbol] = useState('');
-  const [newTargetPct, setNewTargetPct] = useState('');
+const MARKETS = [
+  { id: 'IND', label: '🇮🇳 India' },
+  { id: 'US', label: '🇺🇸 United States' },
+];
+
+const fmt = (n) => n == null ? '—' : `₹${Number(n).toLocaleString('en-IN', { maximumFractionDigits: 0 })}`;
+
+const emptyRules = () => ({
+  IND: { sector: {}, section: {} },
+  US: { sector: {}, section: {} },
+});
+
+// ─── Target editor ────────────────────────────────────────────────────────────
+function TargetEditor({ sectors, sections, existing, onClose, onSave }) {
+  const [name, setName] = useState(existing?.name || '');
+  const [indPercent, setIndPercent] = useState(existing?.ind_percent ?? 50);
+  const [cash, setCash] = useState({
+    IND: existing?.ind_cash_percent ?? 0,
+    US: existing?.us_cash_percent ?? 0,
+  });
+  const [rules, setRules] = useState(() => {
+    const base = emptyRules();
+    if (existing?.rules) {
+      for (const m of ['IND', 'US']) {
+        base[m].sector = { ...(existing.rules[m]?.sector || {}) };
+        base[m].section = { ...(existing.rules[m]?.section || {}) };
+      }
+    }
+    return base;
+  });
+  const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
 
-  const [rebalanceData, setRebalanceData] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  // Mirror the saved allocations into local editable state whenever they change.
-  useEffect(() => { setTargets(targetAllocations || []); }, [targetAllocations]);
-
-  const fetchRebalance = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/rebalance');
-      if (res.ok) setRebalanceData(await res.json());
-    } catch (e) {
-      console.error('Error fetching rebalance data:', e);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => { fetchRebalance(); }, [fetchRebalance]);
-
-  const handlePctChange = (symbol, val) => {
-    setTargets(targets.map(t =>
-      t.symbol === symbol ? { ...t, target_percentage: parseFloat(val) || 0 } : t
-    ));
+  const setRule = (market, dim, key, value) => {
+    setRules(prev => ({
+      ...prev,
+      [market]: { ...prev[market], [dim]: { ...prev[market][dim], [key]: value } },
+    }));
   };
 
-  const handleAddTarget = () => {
-    const sym = newSymbol.trim().toUpperCase();
-    const pct = parseFloat(newTargetPct);
-    if (!sym || isNaN(pct)) return;
-    if (targets.some(t => t.symbol === sym)) return;
-
-    setTargets([...targets, { symbol: sym, company_name: sym, target_percentage: pct }]);
-    setNewSymbol('');
-    setNewTargetPct('');
-  };
-
-  const handleRemoveTarget = async (target) => {
-    setTargets(targets.filter(t => t.symbol !== target.symbol));
-    if (target.id) {
-      await onDeleteTargetAllocation(target.id);
-      await fetchRebalance();
-    }
-  };
+  const sum = (market, dim) =>
+    Object.values(rules[market][dim]).reduce((s, v) => s + (Number(v) || 0), 0);
 
   const handleSave = async () => {
-    setSaving(true);
-    try {
-      // The API upserts one allocation at a time, keyed on symbol.
-      for (const t of targets) {
-        await onSaveTargetAllocation({
-          symbol: t.symbol,
-          company_name: t.company_name || t.symbol,
-          target_percentage: Number(t.target_percentage) || 0,
-          asset_class: t.asset_class || 'EQUITY',
-        });
+    if (!name.trim()) { setError('Target name is required'); return; }
+    for (const m of ['IND', 'US']) {
+      for (const dim of ['sector', 'section']) {
+        const total = sum(m, dim);
+        if (total > 0 && Math.abs(total - 100) > 0.5) {
+          setError(`${m} ${dim} percentages add to ${total.toFixed(1)}% — must be 100% (or all blank to skip).`);
+          return;
+        }
       }
-      await fetchRebalance();
-    } finally {
-      setSaving(false);
+    }
+    setSaving(true);
+    setError('');
+    const err = await onSave({
+      name: name.trim(),
+      ind_percent: Number(indPercent),
+      ind_cash_percent: Number(cash.IND) || 0,
+      us_cash_percent: Number(cash.US) || 0,
+      rules,
+    }, existing?.id);
+    setSaving(false);
+    if (err) setError(err);
+  };
+
+  const PctInput = ({ value, onChange }) => (
+    <input
+      type="number" min="0" max="100" step="0.5"
+      value={value ?? ''}
+      onChange={e => onChange(e.target.value === '' ? '' : Number(e.target.value))}
+      className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-right text-slate-100 font-semibold focus:outline-none focus:border-indigo-500"
+    />
+  );
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-start justify-center p-4 overflow-y-auto">
+      <div className="glass-panel max-w-3xl w-full my-8 rounded-2xl border border-slate-700 shadow-2xl">
+        <div className="p-5 border-b border-slate-800 flex justify-between items-center sticky top-0 bg-slate-950/95 rounded-t-2xl z-10">
+          <h3 className="text-base font-bold text-slate-100 flex items-center">
+            <Target className="w-5 h-5 mr-2 text-indigo-400" />
+            {existing ? 'Edit Target' : 'New Target Portfolio'}
+          </h3>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-200 p-1 rounded-lg">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div>
+            <label className="text-xs font-semibold text-slate-400 block mb-1.5">1 · Target Name</label>
+            <input
+              value={name}
+              onChange={e => { setName(e.target.value); setError(''); }}
+              placeholder="e.g. 2027 Allocation Plan"
+              autoFocus
+              className="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-slate-100 font-bold text-sm focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 block mb-2">2 · India : US Split</label>
+            <div className="flex items-center gap-4">
+              <input
+                type="range" min="0" max="100" step="1"
+                value={indPercent}
+                onChange={e => setIndPercent(Number(e.target.value))}
+                className="flex-1 accent-indigo-500"
+              />
+              <span className="text-sm font-bold text-slate-100 tabular-nums whitespace-nowrap">
+                🇮🇳 {indPercent}% : {100 - indPercent}% 🇺🇸
+              </span>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">Share of total money (invested + cash) in each market.</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 block mb-2">3 · Cash Position per Market</label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {MARKETS.map(m => (
+                <div key={m.id} className="flex items-center justify-between bg-slate-900/50 border border-slate-800 rounded-xl px-3 py-2.5">
+                  <span className="text-xs font-semibold text-slate-300">{m.label}</span>
+                  <div className="flex items-center gap-1.5">
+                    <PctInput value={cash[m.id]} onChange={v => setCash(c => ({ ...c, [m.id]: v }))} />
+                    <span className="text-xs text-slate-500">% cash</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1">Cash as a share of that market's money. 20% means a 20 : 80 cash-to-invested ratio.</p>
+          </div>
+
+          <div>
+            <label className="text-xs font-semibold text-slate-400 block mb-2">4 · Sector &amp; Section Split per Market</label>
+            <p className="text-[10px] text-slate-500 mb-3">
+              Percentages of that market's <em>invested</em> money. Leave a whole group blank to skip it; otherwise it must total 100%.
+            </p>
+
+            <div className="space-y-5">
+              {MARKETS.map(m => (
+                <div key={m.id} className="border border-slate-800 rounded-xl overflow-hidden">
+                  <div className="bg-slate-900/70 px-4 py-2 text-xs font-bold text-slate-200">{m.label}</div>
+                  <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6">
+                    {[
+                      { dim: 'sector', keys: sectors, label: 'Sectors' },
+                      { dim: 'section', keys: sections, label: 'Sections' },
+                    ].map(({ dim, keys, label }) => {
+                      const total = sum(m.id, dim);
+                      const ok = total === 0 || Math.abs(total - 100) <= 0.5;
+                      return (
+                        <div key={dim}>
+                          <div className="flex justify-between items-center mb-2">
+                            <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider">{label}</span>
+                            <span className={`text-[10px] font-bold ${ok ? 'text-slate-500' : 'text-amber-400'}`}>
+                              {total.toFixed(1)}%
+                            </span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {keys.map(k => (
+                              <div key={k} className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] text-slate-400 truncate">{k}</span>
+                                <PctInput
+                                  value={rules[m.id][dim][k]}
+                                  onChange={v => setRule(m.id, dim, k, v)}
+                                />
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {error && (
+            <p className="text-xs text-rose-400 flex items-center gap-1.5">
+              <AlertCircle className="w-3.5 h-3.5 shrink-0" /> <span>{error}</span>
+            </p>
+          )}
+        </div>
+
+        <div className="p-4 border-t border-slate-800 flex justify-between items-center sticky bottom-0 bg-slate-950/95 rounded-b-2xl">
+          <button onClick={onClose} className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">
+            Cancel
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={saving}
+            className="px-5 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 disabled:opacity-50 flex items-center gap-2"
+          >
+            {saving ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Check className="w-4 h-4" />}
+            <span>{existing ? 'Update Target' : 'Create Target'}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Diff table ───────────────────────────────────────────────────────────────
+function DiffTable({ title, note, lines }) {
+  const rows = (lines || []).filter(l => l.target_percent != null || l.current_inr > 0);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden">
+      <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/60">
+        <h4 className="text-xs font-bold text-slate-200">{title}</h4>
+        {note && <p className="text-[10px] text-slate-500 mt-0.5">{note}</p>}
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-left border-collapse text-xs">
+          <thead>
+            <tr className="bg-slate-900/40 border-b border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+              <th className="py-2.5 px-4">Bucket</th>
+              <th className="py-2.5 px-4 text-right">Current</th>
+              <th className="py-2.5 px-4 text-right">Current %</th>
+              <th className="py-2.5 px-4 text-right">Target %</th>
+              <th className="py-2.5 px-4 text-right">Target ₹</th>
+              <th className="py-2.5 px-4 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-800/60">
+            {rows.map(l => {
+              const untargeted = l.target_percent == null;
+              const over = l.delta_inr > 0;
+              // Under half a percent is noise, not a trade worth making.
+              const onTarget = !untargeted && Math.abs(l.delta_percent) < 0.5;
+              return (
+                <tr key={l.key} className="hover:bg-slate-800/30">
+                  <td className="py-2.5 px-4 font-bold text-slate-100">{l.key}</td>
+                  <td className="py-2.5 px-4 text-right text-slate-300">{fmt(l.current_inr)}</td>
+                  <td className="py-2.5 px-4 text-right text-slate-300">{l.current_percent}%</td>
+                  <td className="py-2.5 px-4 text-right text-slate-400">
+                    {untargeted ? <span className="text-slate-600">not set</span> : `${l.target_percent}%`}
+                  </td>
+                  <td className="py-2.5 px-4 text-right text-slate-400">
+                    {untargeted ? <span className="text-slate-600">—</span> : fmt(l.target_inr)}
+                  </td>
+                  <td className="py-2.5 px-4 text-right">
+                    {untargeted ? (
+                      <span className="text-slate-600">—</span>
+                    ) : onTarget ? (
+                      <span className="text-[10px] font-bold text-emerald-400">On target</span>
+                    ) : (
+                      <div>
+                        <span className={`font-bold ${over ? 'text-rose-400' : 'text-emerald-400'}`}>
+                          {over ? 'REDUCE' : 'ADD'} {fmt(Math.abs(l.delta_inr))}
+                        </span>
+                        <div className={`text-[10px] ${over ? 'text-rose-500/80' : 'text-emerald-500/80'}`}>
+                          {over ? '+' : ''}{l.delta_percent}% vs target
+                        </div>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+export default function RebalanceView() {
+  const [meta, setMeta] = useState({ sectors: [], sections: [], targets: [] });
+  const [portfolios, setPortfolios] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [showEditor, setShowEditor] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  const [targetId, setTargetId] = useState('');
+  const [portfolioId, setPortfolioId] = useState('');
+  const [diff, setDiff] = useState(null);
+  const [diffLoading, setDiffLoading] = useState(false);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [tRes, pRes] = await Promise.all([
+        fetch('/api/targets'),
+        fetch('/api/portfolios'),
+      ]);
+      if (tRes.ok) {
+        const data = await tRes.json();
+        setMeta(data);
+        setTargetId(prev => (data.targets.some(t => t.id === prev) ? prev : data.targets[0]?.id || ''));
+      }
+      if (pRes.ok) {
+        const data = await pRes.json();
+        setPortfolios(data);
+        setPortfolioId(prev => (data.some(p => p.id === prev) ? prev : data[0]?.id || ''));
+      }
+    } catch (e) { console.error(e); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  useEffect(() => {
+    if (!targetId || !portfolioId) { setDiff(null); return; }
+    let cancelled = false;
+    (async () => {
+      setDiffLoading(true);
+      try {
+        const res = await fetch(`/api/targets/${targetId}/compare?portfolio_id=${portfolioId}`);
+        if (res.ok && !cancelled) setDiff(await res.json());
+      } catch (e) { console.error(e); }
+      finally { if (!cancelled) setDiffLoading(false); }
+    })();
+    return () => { cancelled = true; };
+  }, [targetId, portfolioId]);
+
+  const handleSave = async (payload, existingId) => {
+    try {
+      const res = await fetch(existingId ? `/api/targets/${existingId}` : '/api/targets', {
+        method: existingId ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return body.detail || 'Could not save the target.';
+      }
+      const saved = await res.json();
+      setShowEditor(false);
+      setEditing(null);
+      await fetchAll();
+      setTargetId(saved.id);
+      return null;
+    } catch (e) {
+      return 'Could not reach the server.';
     }
   };
 
-  const totalTargetPct = targets.reduce((acc, t) => acc + (parseFloat(t.target_percentage) || 0), 0);
-  const isValidTarget = Math.abs(totalTargetPct - 100.0) <= 0.5;
+  const handleDelete = async (id) => {
+    try {
+      const res = await fetch(`/api/targets/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        setDeleteConfirm(null);
+        if (targetId === id) setTargetId('');
+        await fetchAll();
+      }
+    } catch (e) { console.error(e); }
+  };
 
-  const summary = rebalanceData?.summary || {};
-  const matrix = rebalanceData?.matrix || [];
-  const fmt = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`;
+  if (loading) return (
+    <div className="flex flex-col items-center justify-center py-24 text-slate-400 space-y-4">
+      <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+      <p className="text-sm font-medium">Loading targets...</p>
+    </div>
+  );
+
+  const selectedTarget = meta.targets.find(t => t.id === targetId);
 
   return (
-    <div className="space-y-6">
-
-      {/* Target Allocation Editor */}
-      <div className="glass-panel p-6 rounded-2xl border border-slate-800 space-y-4">
-        <div className="flex justify-between items-center flex-wrap gap-4">
+    <div className="space-y-5">
+      <div className="glass-panel p-5 rounded-2xl border border-slate-800">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
           <div>
             <h2 className="text-lg font-bold text-slate-100 flex items-center">
-              <PieChart className="w-5 h-5 mr-2 text-indigo-400" /> Target Portfolio Strategy Builder
+              <Target className="w-5 h-5 mr-2 text-indigo-400" /> Target Rebalancing
             </h2>
+            <p className="text-xs text-slate-400 mt-0.5">
+              Define the shape you want, then compare any portfolio against it.
+            </p>
+          </div>
+          <button
+            onClick={() => { setEditing(null); setShowEditor(true); }}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New Target</span>
+          </button>
+        </div>
+
+        {meta.targets.length > 0 && (
+          <div className="flex flex-col sm:flex-row gap-3 mt-5">
+            <div className="flex-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">Target</label>
+              <div className="flex gap-2">
+                <select
+                  value={targetId}
+                  onChange={e => setTargetId(e.target.value)}
+                  className="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-slate-100 font-semibold focus:outline-none focus:border-indigo-500"
+                >
+                  {meta.targets.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
+                </select>
+                {selectedTarget && (
+                  <>
+                    <button
+                      onClick={() => { setEditing(selectedTarget); setShowEditor(true); }}
+                      className="px-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300"
+                      title="Edit target"
+                    >
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setDeleteConfirm(selectedTarget)}
+                      className="px-3 rounded-xl bg-slate-800 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400"
+                      title="Delete target"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="hidden sm:flex items-end pb-3">
+              <ArrowRight className="w-4 h-4 text-slate-600" />
+            </div>
+
+            <div className="flex-1">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-1.5">Compare Against Portfolio</label>
+              <select
+                value={portfolioId}
+                onChange={e => setPortfolioId(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-slate-100 font-semibold focus:outline-none focus:border-indigo-500"
+              >
+                {portfolios.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.account_count} accts)</option>
+                ))}
+              </select>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {meta.targets.length === 0 && (
+        <div className="glass-panel p-12 rounded-2xl border border-dashed border-slate-700 text-center space-y-4">
+          <Target className="w-12 h-12 text-slate-600 mx-auto" />
+          <div>
+            <h3 className="text-base font-bold text-slate-300">No Targets Yet</h3>
+            <p className="text-xs text-slate-500 mt-1">
+              Create a target to describe the India/US split, cash ratio, and sector/section mix you want.
+            </p>
+          </div>
+          <button
+            onClick={() => setShowEditor(true)}
+            className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Create Your First Target</span>
+          </button>
+        </div>
+      )}
+
+      {diffLoading && (
+        <div className="flex flex-col items-center justify-center py-16 text-slate-400 space-y-3">
+          <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+          <p className="text-xs">Comparing...</p>
+        </div>
+      )}
+
+      {!diffLoading && diff && (
+        <div className="space-y-4">
+          <div className="glass-panel p-4 rounded-2xl border border-slate-800">
             <p className="text-xs text-slate-400">
-              Define the ideal percentage per stock. Allocations should total 100%.
+              <span className="font-bold text-slate-100">{diff.target_name}</span>
+              <ArrowRight className="w-3 h-3 inline mx-2 text-slate-600" />
+              <span className="font-bold text-slate-100">{diff.portfolio_name}</span>
+              <span className="text-slate-500"> · total money {fmt(diff.total_money_inr)}</span>
             </p>
           </div>
 
-          <div className="flex items-center space-x-3">
-            <span className={`text-xs font-bold px-3 py-1.5 rounded-xl flex items-center border ${
-              isValidTarget
-                ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
-                : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
-            }`}>
-              {isValidTarget
-                ? <CheckCircle2 className="w-3.5 h-3.5 mr-1.5" />
-                : <AlertCircle className="w-3.5 h-3.5 mr-1.5" />}
-              Total Target: {totalTargetPct.toFixed(1)}%
-            </span>
+          <DiffTable
+            title="Market Split"
+            note="Share of total money (invested + cash) in each market."
+            lines={diff.market}
+          />
+          <DiffTable
+            title="Cash Position"
+            note="Cash as a share of that market's own money."
+            lines={diff.cash}
+          />
 
-            <button
-              onClick={handleSave}
-              disabled={saving}
-              className="flex items-center space-x-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-600 to-indigo-700 hover:from-indigo-500 hover:to-indigo-600 text-white font-bold text-xs shadow-lg shadow-indigo-600/30 transition-all active:scale-95 disabled:opacity-50"
-            >
-              <Save className="w-4 h-4" />
-              <span>{saving ? 'Saving...' : 'Save Strategy'}</span>
-            </button>
-          </div>
+          {MARKETS.map(m => (
+            <React.Fragment key={m.id}>
+              <DiffTable
+                title={`${m.label} · Sectors`}
+                note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}).`}
+                lines={diff.breakdown[m.id].sector}
+              />
+              <DiffTable
+                title={`${m.label} · Sections`}
+                note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}).`}
+                lines={diff.breakdown[m.id].section}
+              />
+            </React.Fragment>
+          ))}
         </div>
+      )}
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 pt-2">
-          {targets.map((t) => (
-            <div key={t.symbol} className="bg-slate-900/80 p-3 rounded-xl border border-slate-800 flex flex-col justify-between">
-              <div className="flex justify-between items-center mb-1">
-                <span className="font-bold text-xs text-slate-200 truncate">{t.symbol}</span>
-                <button
-                  onClick={() => handleRemoveTarget(t)}
-                  className="text-slate-500 hover:text-rose-400 shrink-0"
-                  title="Remove target"
-                >
-                  <Trash2 className="w-3 h-3" />
-                </button>
+      {showEditor && (
+        <TargetEditor
+          sectors={meta.sectors}
+          sections={meta.sections}
+          existing={editing}
+          onClose={() => { setShowEditor(false); setEditing(null); }}
+          onSave={handleSave}
+        />
+      )}
+
+      {deleteConfirm && (
+        <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="glass-panel max-w-sm w-full p-6 rounded-2xl border border-rose-500/30 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2 rounded-xl bg-rose-500/10 border border-rose-500/20">
+                <Trash2 className="w-5 h-5 text-rose-400" />
               </div>
-              <div className="flex items-center space-x-1">
-                <input
-                  type="number"
-                  step="0.5"
-                  value={t.target_percentage}
-                  onChange={(e) => handlePctChange(t.symbol, e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-xs font-bold text-indigo-400 focus:outline-none focus:border-indigo-500"
-                />
-                <span className="text-xs font-semibold text-slate-400">%</span>
+              <div>
+                <h3 className="text-sm font-bold text-slate-100">Delete "{deleteConfirm.name}"?</h3>
+                <p className="text-xs text-slate-400 mt-0.5">This removes the target only. Your holdings are not affected.</p>
               </div>
             </div>
-          ))}
-
-          <div className="bg-slate-950/60 p-3 rounded-xl border border-dashed border-slate-800 flex flex-col justify-between">
-            <span className="text-[11px] font-semibold text-slate-400">Add Stock</span>
-            <div className="flex space-x-1">
-              <input
-                type="text"
-                placeholder="SYMBOL"
-                value={newSymbol}
-                onChange={(e) => setNewSymbol(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddTarget()}
-                className="w-16 bg-slate-900 border border-slate-700 rounded-lg px-1.5 py-1 text-[11px] font-bold text-slate-200 uppercase"
-              />
-              <input
-                type="number"
-                placeholder="%"
-                value={newTargetPct}
-                onChange={(e) => setNewTargetPct(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleAddTarget()}
-                className="w-12 bg-slate-900 border border-slate-700 rounded-lg px-1 py-1 text-[11px] font-bold text-indigo-400"
-              />
+            <div className="flex justify-end gap-3">
+              <button onClick={() => setDeleteConfirm(null)} className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-semibold">
+                Cancel
+              </button>
               <button
-                onClick={handleAddTarget}
-                className="p-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white"
+                onClick={() => handleDelete(deleteConfirm.id)}
+                className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white text-xs font-bold"
               >
-                <Plus className="w-3.5 h-3.5" />
+                Delete Target
               </button>
             </div>
           </div>
         </div>
-
-        <p className="text-[11px] text-slate-500">
-          Edits apply once you press "Save Strategy". Removing a saved target deletes it immediately.
-        </p>
-      </div>
-
-      {/* Drift & Rebalancing Matrix */}
-      <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
-        <div className="p-4 border-b border-slate-800 bg-slate-900/60 flex justify-between items-center gap-4 flex-wrap">
-          <div>
-            <h3 className="text-sm font-bold text-slate-200 uppercase tracking-wider">
-              Portfolio Drift & Rebalancing Matrix
-            </h3>
-            <p className="text-xs text-slate-400">
-              All accounts · values in ₹ INR · sorted by largest drift
-            </p>
-          </div>
-          <div className="flex items-center space-x-3">
-            <span className="text-xs text-slate-400 font-medium">
-              Portfolio Value: {fmt(summary.portfolio_value)}
-            </span>
-            <button
-              onClick={fetchRebalance}
-              disabled={loading}
-              className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700"
-              title="Refresh live prices"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            </button>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="flex flex-col items-center justify-center py-20 text-slate-400 space-y-4">
-            <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <p className="text-sm font-medium">Calculating portfolio drift & rebalancing actions...</p>
-          </div>
-        ) : matrix.length === 0 ? (
-          <div className="py-16 text-center space-y-2">
-            <PieChart className="w-10 h-10 text-slate-600 mx-auto" />
-            <p className="text-sm font-bold text-slate-300">Nothing to rebalance yet</p>
-            <p className="text-xs text-slate-500">Add holdings and set target percentages above.</p>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="bg-slate-900/80 border-b border-slate-800 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                  <th className="py-3.5 px-4">Stock</th>
-                  <th className="py-3.5 px-4 text-right">LTP (₹)</th>
-                  <th className="py-3.5 px-4 text-right">Current Value</th>
-                  <th className="py-3.5 px-4 text-right">Current %</th>
-                  <th className="py-3.5 px-4 text-right">Target %</th>
-                  <th className="py-3.5 px-4 text-right">Target Value</th>
-                  <th className="py-3.5 px-4 text-right">Drift %</th>
-                  <th className="py-3.5 px-4 text-center">Action</th>
-                  <th className="py-3.5 px-4 text-right">Trade Amount</th>
-                  <th className="py-3.5 px-4 text-right">Est. Units</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800/60 text-xs">
-                {matrix.map((row) => {
-                  const isBuy = row.action === 'BUY';
-                  const isSell = row.action === 'SELL';
-                  return (
-                    <tr key={`${row.symbol}-${row.country}`} className="hover:bg-slate-800/30 transition-colors">
-                      <td className="py-3.5 px-4">
-                        <div className="font-bold text-slate-100 flex items-center gap-1.5">
-                          {row.symbol}
-                          {row.country === 'US' && (
-                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                              🇺🇸 US
-                            </span>
-                          )}
-                        </div>
-                        <div className="text-[10px] text-slate-400 truncate max-w-[180px]">{row.company_name}</div>
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-medium text-slate-300">{fmt(row.current_price)}</td>
-                      <td className="py-3.5 px-4 text-right font-semibold text-slate-100">{fmt(row.current_value)}</td>
-                      <td className="py-3.5 px-4 text-right font-medium text-slate-300">{row.current_pct}%</td>
-                      <td className="py-3.5 px-4 text-right font-bold text-indigo-400">{row.target_pct}%</td>
-                      <td className="py-3.5 px-4 text-right font-medium text-slate-300">{fmt(row.target_value)}</td>
-                      <td className="py-3.5 px-4 text-right">
-                        <span className={`font-bold ${
-                          row.drift_pct > 0 ? 'text-amber-400' : row.drift_pct < 0 ? 'text-indigo-400' : 'text-slate-400'
-                        }`}>
-                          {row.drift_pct > 0 ? '+' : ''}{row.drift_pct}%
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-center">
-                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase ${
-                          isBuy
-                            ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/30'
-                            : isSell
-                            ? 'bg-rose-500/10 text-rose-400 border border-rose-500/30'
-                            : 'bg-slate-800 text-slate-400 border border-slate-700'
-                        }`}>
-                          {isBuy && <ArrowUpRight className="w-3 h-3 mr-1" />}
-                          {isSell && <ArrowDownRight className="w-3 h-3 mr-1" />}
-                          {!isBuy && !isSell && <MinusCircle className="w-3 h-3 mr-1" />}
-                          {row.action}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-bold text-slate-100">
-                        {row.action !== 'HOLD' ? fmt(row.action_amount) : '—'}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-extrabold text-indigo-300">
-                        {row.action !== 'HOLD' && row.action_quantity > 0 ? `${row.action_quantity} shares` : '—'}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   );
 }

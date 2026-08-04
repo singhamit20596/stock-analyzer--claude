@@ -15,8 +15,8 @@ from database import engine, get_db
 from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
-from services.quote_service import fetch_live_prices_batch, fetch_usd_to_inr_rate
-from services.rebalancer import RebalanceEngine
+from services import target_engine, taxonomy
+from services.quote_service import fetch_live_prices_batch, fetch_usd_to_inr_rate, fetch_sectors_batch
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -118,6 +118,42 @@ def delete_account(account_id: str, db: Session = Depends(get_db)):
     return {"message": "Account deleted successfully"}
 
 
+def _resolve_sectors(db: Session, holdings: List[models.Holding]) -> Dict[Tuple[str, str], Dict[str, str]]:
+    """Sector and section per (symbol, country), filling in defaults once.
+
+    Classification is user-owned: anything already stored is returned as-is and
+    never overwritten. Only unclassified holdings get a scraped-and-mapped
+    default, which is then persisted so the scrape happens once ever.
+    """
+    unclassified = [h for h in holdings if not h.sector]
+    if unclassified:
+        scraped = fetch_sectors_batch(
+            (h.symbol, h.country or "IND") for h in unclassified
+        )
+        for h in unclassified:
+            country = h.country or "IND"
+            raw = scraped.get((h.symbol.strip().upper(), country), "")
+            h.sector = taxonomy.default_sector(h.symbol, country, raw)
+            if not h.section:
+                h.section = taxonomy.default_section(h.symbol)
+        db.commit()
+
+    # Backfill section for rows classified before sections existed.
+    missing_section = [h for h in holdings if not h.section]
+    if missing_section:
+        for h in missing_section:
+            h.section = taxonomy.default_section(h.symbol)
+        db.commit()
+
+    return {
+        (h.symbol.strip().upper(), h.country or "IND"): {
+            "sector": h.sector or taxonomy.DEFAULT_SECTOR,
+            "section": h.section or taxonomy.DEFAULT_SECTION,
+        }
+        for h in holdings
+    }
+
+
 @app.get("/api/accounts/{account_id}/screenshot")
 def get_account_screenshot(account_id: str, db: Session = Depends(get_db)):
     acc = db.query(models.Account).filter(models.Account.id == account_id).first()
@@ -141,6 +177,7 @@ def get_account_detail(account_id: str, db: Session = Depends(get_db)):
 
     is_us = acc.currency_type == "US"
     country = "US" if is_us else "IND"
+    sectors = _resolve_sectors(db, holdings)
 
     items: List[Dict[str, Any]] = []
     total_invested = 0.0
@@ -161,6 +198,8 @@ def get_account_detail(account_id: str, db: Session = Depends(get_db)):
             "id": h.id,
             "symbol": h.symbol,
             "company_name": h.company_name,
+            "sector": sectors.get((h.symbol.strip().upper(), country), {}).get("sector", ""),
+            "section": sectors.get((h.symbol.strip().upper(), country), {}).get("section", ""),
             "quantity": round(h.quantity, 4),
             "avg_buy_price": round(h.avg_buy_price, 2),
             "live_current_price": round(price, 2),
@@ -393,6 +432,14 @@ def delete_portfolio(portfolio_id: str, db: Session = Depends(get_db)):
     return {"message": "Portfolio deleted"}
 
 
+def _split(a: float, b: float) -> str:
+    """'62% : 38%' — the same pair as a percentage split."""
+    total = a + b
+    if total <= 0:
+        return "—"
+    return f"{a / total * 100:.0f}% : {b / total * 100:.0f}%"
+
+
 @app.get("/api/portfolios/{portfolio_id}/detail")
 def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
     """Cross-account view of one named portfolio. Every value is in INR."""
@@ -411,6 +458,8 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
     aggregated = PortfolioAggregator.aggregate_holdings(
         accounts, holdings, live_prices, usd_inr_rate
     )
+
+    sectors = _resolve_sectors(db, holdings)
 
     rows = []
     for item in aggregated["items"]:
@@ -431,11 +480,14 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
             bucket["avg_inr"] = round(cost_inr / qty, 2) if qty > 0 else 0.0
             bucket["avg_native"] = round(cost_native / qty, 2) if qty > 0 else 0.0
 
+        klass = sectors.get((item["symbol"].strip().upper(), item["country"]), {})
         rows.append({
             "symbol": item["symbol"],
             "company_name": item["company_name"],
             "country": item["country"],
             "currency": item["currency"],
+            "sector": klass.get("sector", ""),
+            "section": klass.get("section", ""),
             "per_account": per_account,
             "mkt_price_inr": item["current_price_inr"],
             "portfolio_qty": item["total_quantity"],
@@ -453,6 +505,43 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
     )
     summary = aggregated["summary"]
 
+    invested = summary["total_invested_inr"]
+    current = summary["current_value_inr"]
+
+    def ratio(a: float, b: float) -> str:
+        """Normalised 'X : 1' so the split is readable at a glance."""
+        if b <= 0:
+            return "—" if a <= 0 else "100% : 0%"
+        return f"{a / b:.2f} : 1"
+
+    invested_to_cash_ratio = ratio(invested, total_wallet_inr)
+
+    # US to IND ratio: separate holdings by country
+    us_current = sum(r["current_value_inr"] for r in rows if r["country"] == "US")
+    us_wallet = sum(
+        (a.wallet_balance or 0.0) * usd_inr_rate
+        for a in accounts if a.currency_type == "US"
+    )
+    us_total = us_current + us_wallet
+
+    ind_current = sum(r["current_value_inr"] for r in rows if r["country"] == "IND")
+    ind_wallet = sum(
+        (a.wallet_balance or 0.0)
+        for a in accounts if a.currency_type == "IND"
+    )
+    ind_total = ind_current + ind_wallet
+
+    us_to_ind_ratio = ratio(us_total, ind_total)
+
+    # Separate metrics for US and IND
+    us_invested = sum(r["invested_value_inr"] for r in rows if r["country"] == "US")
+    us_pnl = us_current - us_invested
+    us_pnl_pct = (us_pnl / us_invested * 100) if us_invested > 0 else 0.0
+
+    ind_invested = sum(r["invested_value_inr"] for r in rows if r["country"] == "IND")
+    ind_pnl = ind_current - ind_invested
+    ind_pnl_pct = (ind_pnl / ind_invested * 100) if ind_invested > 0 else 0.0
+
     return {
         "portfolio_id": portfolio.id,
         "portfolio_name": portfolio.name,
@@ -461,102 +550,248 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
             {"id": a.id, "name": a.name, "currency_type": a.currency_type} for a in accounts
         ],
         "summary": {
-            "total_invested_inr": summary["total_invested_inr"],
-            "total_current_inr": summary["current_value_inr"],
+            "total_invested_inr": invested,
+            "total_current_inr": current,
             "total_pnl_inr": summary["total_pnl_inr"],
             "total_pnl_percent": summary["total_pnl_percent"],
             "total_wallet_inr": round(total_wallet_inr, 2),
             "total_stocks": summary["total_stocks_count"],
+            "invested_to_cash_ratio": invested_to_cash_ratio,
+            "invested_to_cash_split": _split(invested, total_wallet_inr),
+            "us_to_ind_ratio": us_to_ind_ratio,
+            "us_to_ind_split": _split(us_total, ind_total),
+            "us_total_inr": round(us_total, 2),
+            "ind_total_inr": round(ind_total, 2),
+            "us_metrics": {
+                "invested": us_invested,
+                "current": us_current,
+                "pnl": us_pnl,
+                "pnl_percent": round(us_pnl_pct, 2),
+                "wallet": us_wallet,
+            },
+            "ind_metrics": {
+                "invested": ind_invested,
+                "current": ind_current,
+                "pnl": ind_pnl,
+                "pnl_percent": round(ind_pnl_pct, 2),
+                "wallet": ind_wallet,
+            },
         },
         "rows": rows,
     }
 
 
 # ─────────────────────────────────────────────────────────────
-# TARGET ALLOCATIONS & REBALANCER
+# CLASSIFICATION (sector / section)
 # ─────────────────────────────────────────────────────────────
 
-@app.get("/api/target-allocations", response_model=List[schemas.TargetAllocationResponse])
-def get_target_allocations(db: Session = Depends(get_db)):
-    return db.query(models.TargetAllocation).all()
+@app.get("/api/classification")
+def get_classification(db: Session = Depends(get_db)):
+    """One row per distinct symbol, with holdings rolled up across accounts."""
+    holdings = db.query(models.Holding).all()
+    _resolve_sectors(db, holdings)
 
+    accounts = {a.id: a.name for a in db.query(models.Account).all()}
 
-@app.post("/api/target-allocations", response_model=schemas.TargetAllocationResponse)
-def create_target_allocation(alloc: schemas.TargetAllocationBase, db: Session = Depends(get_db)):
-    symbol = alloc.symbol.strip().upper()
-    existing = db.query(models.TargetAllocation).filter(
-        models.TargetAllocation.symbol == symbol
-    ).first()
+    by_symbol: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for h in holdings:
+        key = (h.symbol.strip().upper(), h.country or "IND")
+        row = by_symbol.get(key)
+        if row is None:
+            row = by_symbol[key] = {
+                "symbol": key[0],
+                "company_name": h.company_name,
+                "country": key[1],
+                "sector": h.sector or taxonomy.DEFAULT_SECTOR,
+                "section": h.section or taxonomy.DEFAULT_SECTION,
+                "quantity": 0.0,
+                "accounts": [],
+            }
+        row["quantity"] += h.quantity
+        name = accounts.get(h.account_id)
+        if name and name not in row["accounts"]:
+            row["accounts"].append(name)
 
-    if existing:
-        existing.target_percentage = alloc.target_percentage
-        existing.company_name = alloc.company_name or existing.company_name
-        existing.asset_class = alloc.asset_class or "EQUITY"
-        db.commit()
-        db.refresh(existing)
-        return existing
-
-    db_alloc = models.TargetAllocation(
-        symbol=symbol,
-        company_name=alloc.company_name or symbol,
-        target_percentage=alloc.target_percentage,
-        asset_class=alloc.asset_class or "EQUITY",
+    rows = sorted(
+        by_symbol.values(),
+        key=lambda r: (r["sector"], r["section"], r["symbol"]),
     )
-    db.add(db_alloc)
+    for r in rows:
+        r["quantity"] = round(r["quantity"], 4)
+
+    return {"sectors": taxonomy.SECTORS, "sections": taxonomy.SECTIONS, "rows": rows}
+
+
+@app.put("/api/classification/{symbol}")
+def update_classification(
+    symbol: str,
+    payload: schemas.ClassificationUpdate,
+    db: Session = Depends(get_db),
+):
+    """Set sector/section for a symbol across every account that holds it."""
+    if payload.sector is not None and payload.sector not in taxonomy.SECTORS:
+        raise HTTPException(status_code=400, detail=f"Unknown sector: {payload.sector}")
+    if payload.section is not None and payload.section not in taxonomy.SECTIONS:
+        raise HTTPException(status_code=400, detail=f"Unknown section: {payload.section}")
+
+    sym = symbol.strip().upper()
+    query = db.query(models.Holding).filter(models.Holding.symbol == sym)
+    if payload.country:
+        query = query.filter(models.Holding.country == payload.country)
+    holdings = query.all()
+    if not holdings:
+        raise HTTPException(status_code=404, detail=f"No holdings for {sym}")
+
+    for h in holdings:
+        if payload.sector is not None:
+            h.sector = payload.sector
+        if payload.section is not None:
+            h.section = payload.section
     db.commit()
-    db.refresh(db_alloc)
-    return db_alloc
+
+    return {"symbol": sym, "updated": len(holdings),
+            "sector": holdings[0].sector, "section": holdings[0].section}
 
 
-@app.delete("/api/target-allocations/{alloc_id}")
-def delete_target_allocation(alloc_id: str, db: Session = Depends(get_db)):
-    alloc = db.query(models.TargetAllocation).filter(
-        models.TargetAllocation.id == alloc_id
-    ).first()
-    if not alloc:
-        raise HTTPException(status_code=404, detail="Target allocation not found")
-    db.delete(alloc)
+# ─────────────────────────────────────────────────────────────
+# TARGET PORTFOLIOS
+# ─────────────────────────────────────────────────────────────
+
+def _target_payload(t: models.TargetPortfolio) -> Dict[str, Any]:
+    rules: Dict[str, Dict[str, Dict[str, float]]] = {
+        "IND": {"sector": {}, "section": {}},
+        "US": {"sector": {}, "section": {}},
+    }
+    for r in t.rules:
+        if r.market in rules and r.dimension in rules[r.market]:
+            rules[r.market][r.dimension][r.key] = r.percent
+    return {
+        "id": t.id,
+        "name": t.name,
+        "ind_percent": t.ind_percent,
+        "us_percent": round(100.0 - (t.ind_percent or 0.0), 2),
+        "ind_cash_percent": t.ind_cash_percent,
+        "us_cash_percent": t.us_cash_percent,
+        "rules": rules,
+    }
+
+
+def _apply_rules(db: Session, target: models.TargetPortfolio,
+                 rules: Optional[Dict[str, Dict[str, Dict[str, float]]]]) -> None:
+    """Replaces the target's rule set wholesale. Zero/blank entries are dropped."""
+    if rules is None:
+        return
+    db.query(models.TargetRule).filter(
+        models.TargetRule.target_id == target.id
+    ).delete(synchronize_session=False)
+
+    for market, dims in rules.items():
+        if market not in ("IND", "US"):
+            raise HTTPException(status_code=400, detail=f"Unknown market: {market}")
+        for dimension, entries in (dims or {}).items():
+            if dimension not in ("sector", "section"):
+                raise HTTPException(status_code=400, detail=f"Unknown dimension: {dimension}")
+            allowed = taxonomy.SECTORS if dimension == "sector" else taxonomy.SECTIONS
+            for key, percent in (entries or {}).items():
+                if key not in allowed:
+                    raise HTTPException(status_code=400, detail=f"Unknown {dimension}: {key}")
+                if percent is None or float(percent) <= 0:
+                    continue
+                db.add(models.TargetRule(
+                    target_id=target.id, market=market,
+                    dimension=dimension, key=key, percent=float(percent),
+                ))
+
+
+@app.get("/api/targets")
+def list_targets(db: Session = Depends(get_db)):
+    targets = db.query(models.TargetPortfolio).order_by(models.TargetPortfolio.name).all()
+    return {
+        "sectors": taxonomy.SECTORS,
+        "sections": taxonomy.SECTIONS,
+        "targets": [_target_payload(t) for t in targets],
+    }
+
+
+@app.post("/api/targets")
+def create_target(payload: schemas.TargetPortfolioCreate, db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Target name is required")
+    if db.query(models.TargetPortfolio).filter(models.TargetPortfolio.name == name).first():
+        raise HTTPException(status_code=400, detail=f"A target named '{name}' already exists")
+
+    target = models.TargetPortfolio(
+        name=name,
+        ind_percent=payload.ind_percent,
+        ind_cash_percent=payload.ind_cash_percent,
+        us_cash_percent=payload.us_cash_percent,
+    )
+    db.add(target)
+    db.flush()
+    _apply_rules(db, target, payload.rules)
     db.commit()
-    return {"message": "Target allocation deleted"}
+    db.refresh(target)
+    return _target_payload(target)
 
 
-@app.get("/api/rebalance")
-def get_rebalance_recommendations(portfolio_id: Optional[str] = None, db: Session = Depends(get_db)):
-    """Drift and trade recommendations, in INR.
+@app.put("/api/targets/{target_id}")
+def update_target(target_id: str, payload: schemas.TargetPortfolioCreate,
+                  db: Session = Depends(get_db)):
+    target = db.query(models.TargetPortfolio).filter(
+        models.TargetPortfolio.id == target_id
+    ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
 
-    Scoped to one named portfolio when `portfolio_id` is given, otherwise
-    across every account.
-    """
-    if portfolio_id:
-        portfolio = db.query(models.Portfolio).filter(
-            models.Portfolio.id == portfolio_id
-        ).first()
-        if not portfolio:
-            raise HTTPException(status_code=404, detail="Portfolio not found")
-        accounts = [link.account for link in portfolio.account_links if link.account]
-    else:
-        accounts = db.query(models.Account).all()
+    target.name = payload.name.strip() or target.name
+    target.ind_percent = payload.ind_percent
+    target.ind_cash_percent = payload.ind_cash_percent
+    target.us_cash_percent = payload.us_cash_percent
+    _apply_rules(db, target, payload.rules)
+    db.commit()
+    db.refresh(target)
+    return _target_payload(target)
 
-    account_ids = [a.id for a in accounts]
-    holdings = (
-        db.query(models.Holding).filter(models.Holding.account_id.in_(account_ids)).all()
-        if account_ids else []
-    )
-    targets = db.query(models.TargetAllocation).all()
 
-    live_prices, usd_inr_rate = _price_quotes(accounts, holdings)
+@app.delete("/api/targets/{target_id}")
+def delete_target(target_id: str, db: Session = Depends(get_db)):
+    target = db.query(models.TargetPortfolio).filter(
+        models.TargetPortfolio.id == target_id
+    ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
+    db.delete(target)
+    db.commit()
+    return {"message": "Target deleted"}
 
-    # Targets for stocks not held yet have no holding to source a quote from,
-    # so look those up too — otherwise their "units to buy" is always zero.
-    held = {sym for sym, _ in live_prices}
-    unheld = [(t.symbol.strip().upper(), "IND") for t in targets
-              if t.symbol.strip().upper() not in held]
-    if unheld:
-        live_prices.update(fetch_live_prices_batch(unheld))
 
-    return RebalanceEngine.calculate_rebalance(
-        accounts, holdings, targets, live_prices, usd_inr_rate
-    )
+@app.get("/api/targets/{target_id}/compare")
+def compare_target(target_id: str, portfolio_id: str, db: Session = Depends(get_db)):
+    """Bucket-level diff between a target's shape and a real portfolio."""
+    target = db.query(models.TargetPortfolio).filter(
+        models.TargetPortfolio.id == target_id
+    ).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Target not found")
+
+    detail = get_portfolio_detail(portfolio_id, db)
+    accounts = db.query(models.Account).filter(
+        models.Account.id.in_([a["id"] for a in detail["accounts"]])
+    ).all() if detail["accounts"] else []
+
+    usd_inr_rate = detail["usd_inr_rate"]
+    wallet_by_market = {"IND": 0.0, "US": 0.0}
+    for a in accounts:
+        is_us = a.currency_type == "US"
+        wallet_by_market["US" if is_us else "IND"] += (
+            (a.wallet_balance or 0.0) * (usd_inr_rate if is_us else 1.0)
+        )
+
+    result = target_engine.compare(target, detail["rows"], wallet_by_market)
+    result["portfolio_id"] = portfolio_id
+    result["portfolio_name"] = detail["portfolio_name"]
+    return result
 
 
 @app.get("/api/sync-logs")

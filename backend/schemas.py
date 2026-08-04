@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel
 
@@ -44,20 +44,21 @@ class VerifySaveRequest(BaseModel):
     holdings: List[HoldingBase]
 
 
-class TargetAllocationBase(BaseModel):
-    symbol: str
-    company_name: Optional[str] = ""
-    target_percentage: float
-    asset_class: Optional[str] = "EQUITY"
-
-
-class TargetAllocationResponse(TargetAllocationBase):
-    id: str
-
-    class Config:
-        from_attributes = True
+class TargetPortfolioCreate(BaseModel):
+    name: str
+    ind_percent: float = 50.0
+    ind_cash_percent: float = 0.0
+    us_cash_percent: float = 0.0
+    # {"IND": {"sector": {"Financials": 40.0}, "section": {...}}, "US": {...}}
+    rules: Optional[Dict[str, Dict[str, Dict[str, float]]]] = None
 
 
 class PortfolioCreate(BaseModel):
     name: str
     account_ids: List[str]
+
+
+class ClassificationUpdate(BaseModel):
+    sector: Optional[str] = None
+    section: Optional[str] = None
+    country: Optional[str] = None

@@ -572,6 +572,7 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                 <thead>
                   <tr className="bg-slate-900/80 border-b border-slate-800 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                     <th className="py-3.5 px-4">Stock</th>
+                    <th className="py-3.5 px-4">Sector</th>
                     <th className="py-3.5 px-4 text-right">Qty</th>
                     <th className="py-3.5 px-4 text-right">Avg Price ({currencySymbol})</th>
                     <th className="py-3.5 px-4 text-right">Live Price ({currencySymbol})</th>
@@ -588,6 +589,9 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                         <td className="py-3.5 px-4">
                           <div className="font-bold text-slate-100">{item.symbol}</div>
                           <div className="text-[10px] text-slate-400 truncate max-w-[180px]">{item.company_name}</div>
+                        </td>
+                        <td className="py-3.5 px-4 text-slate-300 whitespace-nowrap">
+                          {item.sector || <span className="text-slate-600">—</span>}
                         </td>
                         <td className="py-3.5 px-4 text-right font-medium text-slate-200">{item.quantity}</td>
                         <td className="py-3.5 px-4 text-right font-medium text-slate-200">{currencySymbol}{item.avg_buy_price}</td>

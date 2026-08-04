@@ -3,6 +3,17 @@ import {
   ChevronDown, ChevronUp, Search, Plus,
   Layers, Trash2, X, CheckCircle2, AlertCircle, Edit2, Globe
 } from 'lucide-react';
+import AllocationPie from './AllocationPie';
+
+// Current value summed per distinct value of `key`, for the pie charts.
+function groupBy(rows, key) {
+  const totals = new Map();
+  for (const r of rows || []) {
+    const label = r[key] || 'Unclassified';
+    totals.set(label, (totals.get(label) || 0) + (r.current_value_inr || 0));
+  }
+  return [...totals].map(([label, value]) => ({ label, value }));
+}
 
 // ─── Portfolio Creator Modal ───────────────────────────────────────────────────
 function PortfolioCreatorModal({ accounts, existingPortfolio, onClose, onSave }) {
@@ -106,6 +117,7 @@ function PortfolioTableView({ portfolioId }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [sortKey, setSortKey] = useState('current_value_inr');
   const [sortAsc, setSortAsc] = useState(false);
+  const [showCompleteOnly, setShowCompleteOnly] = useState(false);
 
   const fetchDetail = useCallback(async () => {
     if (!portfolioId) return;
@@ -131,10 +143,22 @@ function PortfolioTableView({ portfolioId }) {
   const { summary, rows, accounts, usd_inr_rate } = detail;
   const isPositive = (summary.total_pnl_inr || 0) >= 0;
 
-  const filtered = (rows || []).filter(r =>
-    r.symbol.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    r.company_name.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // "Complete" = held in every account of this portfolio. A US-only account
+  // can never hold an Indian stock, so only accounts of the row's own market
+  // count towards completeness.
+  const isComplete = (row) => {
+    const eligible = accounts.filter(a =>
+      (a.currency_type === 'US' ? 'US' : 'IND') === row.country
+    );
+    return eligible.length > 0 && eligible.every(a => row.per_account[a.id]);
+  };
+
+  const filtered = (rows || []).filter(r => {
+    const term = searchTerm.toLowerCase();
+    const matchesSearch = r.symbol.toLowerCase().includes(term) ||
+      r.company_name.toLowerCase().includes(term);
+    return matchesSearch && (!showCompleteOnly || isComplete(r));
+  });
 
   const sorted = [...filtered].sort((a, b) => {
     const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
@@ -195,20 +219,107 @@ function PortfolioTableView({ portfolioId }) {
         </div>
       </div>
 
-      {/* Search */}
-      <div className="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center space-x-3">
+      {/* Ratios */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+        <div className="glass-panel p-4 rounded-2xl border border-slate-800">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">Invested : Cash</p>
+          <p className="text-lg font-bold text-slate-100">{summary.invested_to_cash_ratio || '—'}</p>
+          <span className="text-[10px] text-slate-500">
+            {summary.invested_to_cash_split} · {fmt(summary.total_invested_inr)} vs {fmt(summary.total_wallet_inr)}
+          </span>
+        </div>
+        <div className="glass-panel p-4 rounded-2xl border border-slate-800">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400 mb-1">US : India</p>
+          <p className="text-lg font-bold text-slate-100">{summary.us_to_ind_ratio || '—'}</p>
+          <span className="text-[10px] text-slate-500">
+            {summary.us_to_ind_split} · {fmt(summary.us_total_inr)} vs {fmt(summary.ind_total_inr)} (current + wallet)
+          </span>
+        </div>
+      </div>
+
+      {/* Regional Breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {[
+          { label: '🇮🇳 India', metrics: summary.ind_metrics, tone: 'border-emerald-500/20 bg-emerald-500/5' },
+          { label: '🇺🇸 United States', metrics: summary.us_metrics, tone: 'border-amber-500/20 bg-amber-500/5' },
+        ].map(({ label, metrics, tone }) => {
+          if (!metrics) return null;
+          const pos = (metrics.pnl || 0) >= 0;
+          return (
+            <div key={label} className={`glass-panel p-5 rounded-2xl border ${tone}`}>
+              <h4 className="text-sm font-bold text-slate-100 mb-4">{label}</h4>
+              <div className="grid grid-cols-2 gap-x-6 gap-y-3">
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">Invested</p>
+                  <p className="text-base font-bold text-slate-100">{fmt(metrics.invested)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">Current</p>
+                  <p className="text-base font-bold text-white">{fmt(metrics.current)}</p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">P&L</p>
+                  <p className={`text-base font-bold ${pos ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {pos ? '+' : ''}{fmt(metrics.pnl)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">P&L %</p>
+                  <p className={`text-base font-bold ${pos ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {pos ? '+' : ''}{metrics.pnl_percent}%
+                  </p>
+                </div>
+                <div className="col-span-2">
+                  <p className="text-[10px] uppercase tracking-wider text-slate-400">Cash Position</p>
+                  <p className="text-base font-bold text-amber-400">{fmt(metrics.wallet)}</p>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Allocation breakdown */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <AllocationPie
+          title="Sector Allocation"
+          subtitle="Share of current value, all markets"
+          data={groupBy(rows, 'sector')}
+        />
+        <AllocationPie
+          title="Section Allocation"
+          subtitle="Share of current value, all markets"
+          data={groupBy(rows, 'section')}
+        />
+      </div>
+
+      {/* Search + Filter */}
+      <div className="glass-panel p-3 rounded-2xl border border-slate-800 flex items-center gap-3">
         <Search className="w-4 h-4 text-slate-400 shrink-0" />
         <input
           value={searchTerm}
           onChange={e => setSearchTerm(e.target.value)}
           placeholder="Search by symbol or company..."
-          className="bg-transparent text-sm text-slate-200 placeholder-slate-500 focus:outline-none flex-1"
+          className="bg-transparent text-sm text-slate-200 placeholder-slate-500 focus:outline-none flex-1 min-w-0"
         />
         {searchTerm && (
           <button onClick={() => setSearchTerm('')} className="text-slate-400 hover:text-slate-200">
             <X className="w-4 h-4" />
           </button>
         )}
+        <button
+          onClick={() => setShowCompleteOnly(v => !v)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors ${
+            showCompleteOnly
+              ? 'bg-indigo-500 text-white'
+              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+          }`}
+        >
+          {showCompleteOnly ? 'Showing Complete Only' : 'Complete Holdings Only'}
+        </button>
+        <span className="text-[10px] text-slate-500 whitespace-nowrap">
+          {filtered.length} of {rows.length}
+        </span>
       </div>
 
       {/* Cross-Account Portfolio Table */}
@@ -223,6 +334,7 @@ function PortfolioTableView({ portfolioId }) {
             <thead>
               <tr className="bg-slate-900/80 border-b border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="py-3 px-3 sticky left-0 bg-slate-900/80 z-10">Stock</th>
+                <th className="py-3 px-3 whitespace-nowrap">Sector</th>
                 {/* Per-account columns */}
                 {accounts.map(acc => (
                   <React.Fragment key={acc.id}>
@@ -274,6 +386,10 @@ function PortfolioTableView({ portfolioId }) {
                           </span>
                         </div>
                       </div>
+                    </td>
+
+                    <td className="py-3 px-3 text-slate-300 whitespace-nowrap">
+                      {row.sector || <span className="text-slate-600">—</span>}
                     </td>
 
                     {/* Per-account qty and avg */}

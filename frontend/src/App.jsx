@@ -5,12 +5,12 @@ import AccountDetailView from './components/AccountDetailView';
 import AccountsView from './components/AccountsView';
 import RebalanceView from './components/RebalanceView';
 import SyncLogsView from './components/SyncLogsView';
+import ClassificationView from './components/ClassificationView';
 import VerificationModal from './components/VerificationModal';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'portfolio');
   const [accounts, setAccounts] = useState([]);
-  const [targetAllocations, setTargetAllocations] = useState([]);
 
   // Holdings parsed out of a screenshot, awaiting the user's review.
   const [verificationModal, setVerificationModal] = useState({
@@ -33,19 +33,7 @@ export default function App() {
     }
   }, []);
 
-  const fetchTargetAllocations = useCallback(async () => {
-    try {
-      const res = await fetch('/api/target-allocations');
-      if (res.ok) setTargetAllocations(await res.json());
-    } catch (e) {
-      console.error('Error fetching target allocations:', e);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchAccounts();
-    fetchTargetAllocations();
-  }, [fetchAccounts, fetchTargetAllocations]);
+  useEffect(() => { fetchAccounts(); }, [fetchAccounts]);
 
   const handleAddAccount = async (newAccount) => {
     try {
@@ -128,28 +116,6 @@ export default function App() {
     }
   };
 
-  const handleSaveTargetAllocation = async (targetItem) => {
-    try {
-      const res = await fetch('/api/target-allocations', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(targetItem),
-      });
-      if (res.ok) await fetchTargetAllocations();
-    } catch (e) {
-      console.error('Error saving target allocation:', e);
-    }
-  };
-
-  const handleDeleteTargetAllocation = async (allocId) => {
-    try {
-      const res = await fetch(`/api/target-allocations/${allocId}`, { method: 'DELETE' });
-      if (res.ok) await fetchTargetAllocations();
-    } catch (e) {
-      console.error('Error deleting target allocation:', e);
-    }
-  };
-
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white pb-16">
       <Navbar activeTab={activeTab} setActiveTab={handleTabChange} />
@@ -172,13 +138,8 @@ export default function App() {
             onDeleteAccount={handleDeleteAccount}
           />
         )}
-        {activeTab === 'rebalance' && (
-          <RebalanceView
-            targetAllocations={targetAllocations}
-            onSaveTargetAllocation={handleSaveTargetAllocation}
-            onDeleteTargetAllocation={handleDeleteTargetAllocation}
-          />
-        )}
+        {activeTab === 'rebalance' && <RebalanceView />}
+        {activeTab === 'classification' && <ClassificationView />}
         {activeTab === 'logs' && <SyncLogsView />}
       </main>
 

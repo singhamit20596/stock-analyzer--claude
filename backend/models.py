@@ -34,20 +34,45 @@ class Holding(Base):
     current_price = Column(Float, nullable=False)
     country = Column(String, default="IND")     # "IND" or "US"
     currency = Column(String, default="INR")    # "INR" or "USD"
+    sector = Column(String, nullable=True)      # Financials, Healthcare, Datacentre, CapitalMarket, AI, Software, Semiconductor, Others
+    section = Column(String, nullable=True)     # Hyperscalers, Satellite, regular
     is_user_verified = Column(Integer, default=0)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     account = relationship("Account", back_populates="holdings")
 
 
-class TargetAllocation(Base):
-    __tablename__ = "target_allocations"
+class TargetPortfolio(Base):
+    """The shape a portfolio should be in, expressed as percentages.
+
+    Split is India-vs-US at the top; within each market the user sets a cash
+    ratio plus sector and section splits (see TargetRule).
+    """
+    __tablename__ = "target_portfolios"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    symbol = Column(String, nullable=False, unique=True)
-    company_name = Column(String, nullable=False)
-    target_percentage = Column(Float, nullable=False)
-    asset_class = Column(String, default="EQUITY")
+    name = Column(String, nullable=False, unique=True)
+    ind_percent = Column(Float, default=50.0)   # of total money; US is the remainder
+    ind_cash_percent = Column(Float, default=0.0)  # cash as % of that market's money
+    us_cash_percent = Column(Float, default=0.0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    rules = relationship("TargetRule", back_populates="target",
+                         cascade="all, delete-orphan")
+
+
+class TargetRule(Base):
+    """One sector or section percentage, within one market of one target."""
+    __tablename__ = "target_rules"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    target_id = Column(String, ForeignKey("target_portfolios.id"), nullable=False)
+    market = Column(String, nullable=False)      # "IND" or "US"
+    dimension = Column(String, nullable=False)   # "sector" or "section"
+    key = Column(String, nullable=False)         # e.g. "Financials", "Satellite"
+    percent = Column(Float, nullable=False)      # of that market's invested money
+
+    target = relationship("TargetPortfolio", back_populates="rules")
 
 
 class SyncLog(Base):
