@@ -14,3 +14,4 @@ rapidocr-onnxruntime
 # these only if it is unavailable, so they are not installed by default —
 # easyocr alone pulls in PyTorch (~2GB). Install by hand if you ever need them:
 #   pip install easyocr pytesseract
+anthropic

@@ -1,7 +1,8 @@
 import React from 'react';
-import { LayoutDashboard, PieChart, Wallet, History, UserCheck, Tags } from 'lucide-react';
+import { LayoutDashboard, PieChart, Wallet, History, UserCheck, Tags , Sparkles } from 'lucide-react';
 
 export const NAV_ITEMS = [
+  { id: 'chat', label: 'Assistant', icon: Sparkles },
   { id: 'portfolio', label: 'Consolidated Portfolio', icon: LayoutDashboard },
   { id: 'account-detail', label: 'Accounts Summary', icon: Wallet },
   { id: 'classification', label: 'Classification', icon: Tags },

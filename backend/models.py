@@ -36,6 +36,10 @@ class Holding(Base):
     currency = Column(String, default="INR")    # "INR" or "USD"
     sector = Column(String, nullable=True)      # Financials, Healthcare, Datacentre, CapitalMarket, AI, Software, Semiconductor, Others
     section = Column(String, nullable=True)     # Hyperscalers, Satellite, regular
+    # When this stock first appeared in an import — NOT the purchase date. It
+    # dates from when the app started tracking the position, so it is a lower
+    # bound on the holding period and nothing more.
+    first_seen_at = Column(DateTime, nullable=True)
     is_user_verified = Column(Integer, default=0)
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 

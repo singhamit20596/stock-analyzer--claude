@@ -75,6 +75,15 @@ class AddStocksRequest(BaseModel):
     stocks: List[StockClassification]
 
 
+class ChatMessage(BaseModel):
+    role: str            # "user" or "assistant"
+    content: str
+
+
+class ChatRequest(BaseModel):
+    messages: List[ChatMessage]
+
+
 class ClassificationUpdate(BaseModel):
     sector: Optional[str] = None
     section: Optional[str] = None

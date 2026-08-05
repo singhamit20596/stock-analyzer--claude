@@ -15,7 +15,7 @@ from database import engine, get_db
 from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
-from services import history_engine, target_engine, taxonomy
+from services import chat_agent, history_engine, target_engine, taxonomy
 from services.quote_service import (fetch_live_prices_batch, fetch_sector,
                                    fetch_sectors_batch, fetch_usd_to_inr_rate)
 from services.symbols import guess_market, normalize_symbol
@@ -317,14 +317,23 @@ def verify_and_save_holdings(
     country = "US" if is_us else "IND"
     currency = "USD" if is_us else "INR"
 
+    prior = db.query(models.Holding).filter(models.Holding.account_id == account.id).all()
     existing = [
         {
             "id": h.id, "symbol": h.symbol, "company_name": h.company_name,
             "quantity": h.quantity, "avg_buy_price": h.avg_buy_price,
             "current_price": h.current_price,
         }
-        for h in db.query(models.Holding).filter(models.Holding.account_id == account.id).all()
+        for h in prior
     ]
+
+    # Rows are deleted and re-inserted below, so anything the user owns has to
+    # be carried across by symbol: their sector/section edits, and the date the
+    # position was first seen.
+    carried = {
+        h.symbol.strip().upper(): (h.sector, h.section, h.first_seen_at)
+        for h in prior
+    }
 
     final_holdings, warnings = AccountDeduplicator.process_deduplication(
         existing_holdings=existing,
@@ -332,8 +341,10 @@ def verify_and_save_holdings(
         strategy=strategy,
     )
 
+    now = _utcnow()
     db.query(models.Holding).filter(models.Holding.account_id == account.id).delete()
     for h in final_holdings:
+        sector, section, first_seen = carried.get(h["symbol"].strip().upper(), (None, None, None))
         db.add(models.Holding(
             account_id=account.id,
             symbol=h["symbol"],
@@ -343,6 +354,9 @@ def verify_and_save_holdings(
             current_price=h.get("current_price") or 0.0,
             country=country,
             currency=currency,
+            sector=sector,
+            section=section,
+            first_seen_at=first_seen or now,
             is_user_verified=1,
         ))
 
@@ -862,6 +876,118 @@ def get_portfolio_history(portfolio_id: str, range: str = "3mo",
     result = history_engine.build_history(rows, range)
     result["portfolio_id"] = portfolio_id
     result["portfolio_name"] = portfolio.name
+    return result
+
+
+@app.post("/api/chat")
+def chat(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+    """Ask the portfolio assistant a question.
+
+    Assembles the full portfolio into the prompt (see chat_agent for why that
+    beats retrieval at this size) and lets the model search the web itself.
+    """
+    if not payload.messages:
+        raise HTTPException(status_code=400, detail="No messages provided")
+
+    accounts = db.query(models.Account).all()
+    holdings = db.query(models.Holding).all()
+    classified = _resolve_sectors(db, holdings)
+
+    live_prices, usd_inr_rate = _price_quotes(accounts, holdings)
+    aggregated = PortfolioAggregator.aggregate_holdings(
+        accounts, holdings, live_prices, usd_inr_rate
+    )
+
+    first_seen = {
+        (h.symbol.strip().upper(), h.country or "IND"): h.first_seen_at
+        for h in holdings if h.first_seen_at
+    }
+    rows = []
+    for item in aggregated["items"]:
+        seen = first_seen.get((item["symbol"], item["country"]))
+        rows.append({
+            "symbol": item["symbol"],
+            "company_name": item["company_name"],
+            "country": item["country"],
+            "sector": item.get("sector"),
+            "section": item.get("section"),
+            "quantity": item["total_quantity"],
+            "avg_buy_price_inr": item["wacp_inr"],
+            "current_price_inr": item["current_price_inr"],
+            "current_value_inr": item["current_value_inr"],
+            "pnl_inr": item["pnl_inr"],
+            "pnl_percent": item["pnl_percent"],
+            "first_seen_at": seen.strftime("%Y-%m-%d") if seen else None,
+        })
+
+    for row in rows:
+        meta = classified.get((row["symbol"], row["country"])) or {}
+        row["sector"] = row["sector"] or meta.get("sector")
+        row["section"] = row["section"] or meta.get("section")
+
+    wallet_by_market = {"IND": 0.0, "US": 0.0}
+    account_rows = []
+    for a in accounts:
+        is_us = a.currency_type == "US"
+        wallet_inr = (a.wallet_balance or 0.0) * (usd_inr_rate if is_us else 1.0)
+        wallet_by_market["US" if is_us else "IND"] += wallet_inr
+        account_rows.append({
+            "name": a.name,
+            "currency_type": a.currency_type,
+            "wallet_balance_inr": round(wallet_inr, 2),
+        })
+
+    summary = aggregated["summary"]
+    invested = summary["total_invested_inr"]
+    current = summary["current_value_inr"]
+    total_wallet = wallet_by_market["IND"] + wallet_by_market["US"]
+
+    def market_slice(market: str) -> Dict[str, Any]:
+        inv = sum(r["current_value_inr"] for r in rows if r["country"] == market)
+        cost = sum(r["current_value_inr"] - r["pnl_inr"] for r in rows if r["country"] == market)
+        return {
+            "invested": round(cost, 2),
+            "current": round(inv, 2),
+            "pnl": round(inv - cost, 2),
+            "pnl_percent": round((inv - cost) / cost * 100, 2) if cost > 0 else 0.0,
+            "wallet": round(wallet_by_market[market], 2),
+        }
+
+    ind, us = market_slice("IND"), market_slice("US")
+    ind_total = ind["current"] + ind["wallet"]
+    us_total = us["current"] + us["wallet"]
+
+    snapshot = {
+        "usd_inr_rate": usd_inr_rate,
+        "summary": {
+            "total_invested_inr": invested,
+            "total_current_inr": current,
+            "total_pnl_inr": summary["total_pnl_inr"],
+            "total_pnl_percent": summary["total_pnl_percent"],
+            "total_wallet_inr": round(total_wallet, 2),
+            "invested_to_cash_ratio": f"{invested:.0f} : {total_wallet:.0f}",
+            "us_to_ind_ratio": f"{us_total:.0f} : {ind_total:.0f}",
+            "ind_metrics": ind,
+            "us_metrics": us,
+        },
+        "accounts": account_rows,
+        "holdings": rows,
+        "targets": [_target_payload(t) for t in db.query(models.TargetPortfolio).all()],
+        "watchlist": [
+            {"symbol": w.symbol, "country": w.country,
+             "sector": w.sector, "section": w.section}
+            for w in db.query(models.WatchStock).all()
+        ],
+    }
+
+    try:
+        result = chat_agent.ask([m.dict() for m in payload.messages], snapshot)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Assistant call failed: {exc}")
+
+    result["holdings_in_context"] = len(rows)
     return result
 
 

@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import Navbar from './components/Navbar';
+import ChatView from './components/ChatView';
 import ConsolidatedPortfolio from './components/ConsolidatedPortfolio';
 import AccountDetailView from './components/AccountDetailView';
 import AccountsView from './components/AccountsView';
@@ -121,6 +122,7 @@ export default function App() {
       <Navbar activeTab={activeTab} setActiveTab={handleTabChange} />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
+        {activeTab === 'chat' && <ChatView />}
         {activeTab === 'portfolio' && (
           <ConsolidatedPortfolio accounts={accounts} />
         )}
