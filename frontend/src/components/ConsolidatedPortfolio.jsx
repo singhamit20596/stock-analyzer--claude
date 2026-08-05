@@ -4,6 +4,7 @@ import {
   Layers, Trash2, X, CheckCircle2, AlertCircle, Edit2, Globe
 } from 'lucide-react';
 import AllocationPie from './AllocationPie';
+import PerformanceChart from './PerformanceChart';
 
 // Current value summed per distinct value of `key`, for the pie charts.
 function groupBy(rows, key) {
@@ -278,6 +279,9 @@ function PortfolioTableView({ portfolioId }) {
           );
         })}
       </div>
+
+      {/* Performance over time */}
+      <PerformanceChart portfolioId={portfolioId} />
 
       {/* Allocation breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -9,17 +9,64 @@ from typing import Any, Dict, List
 from services import taxonomy
 
 
+# India is managed by sector, the US by section. Each market therefore shows
+# exactly one dimension, and the other is ignored when comparing.
+MARKET_DIMENSION = {"IND": "sector", "US": "section"}
+
+
+def _key_of(row: Dict[str, Any], dimension: str) -> str:
+    return row.get(dimension) or (
+        taxonomy.DEFAULT_SECTOR if dimension == "sector" else taxonomy.DEFAULT_SECTION
+    )
+
+
 def _bucket(rows: List[Dict[str, Any]], market: str, dimension: str) -> Dict[str, float]:
     """Current value per sector/section key, for one market."""
     totals: Dict[str, float] = {}
     for r in rows:
         if r["country"] != market:
             continue
-        key = r.get(dimension) or (
-            taxonomy.DEFAULT_SECTOR if dimension == "sector" else taxonomy.DEFAULT_SECTION
-        )
+        key = _key_of(r, dimension)
         totals[key] = totals.get(key, 0.0) + r["current_value_inr"]
     return totals
+
+
+def _stocks_in_bucket(rows: List[Dict[str, Any]], market: str, dimension: str,
+                      key: str, bucket_target_inr: float) -> List[Dict[str, Any]]:
+    """Per-stock current vs target inside one bucket.
+
+    The target is equal-weighted: a bucket's money is split evenly across the
+    stocks in it, so an oversized position shows up as REDUCE even when the
+    bucket as a whole is under target.
+    """
+    members = [r for r in rows
+               if r["country"] == market and _key_of(r, dimension) == key]
+    if not members:
+        return []
+
+    bucket_current = sum(r["current_value_inr"] for r in members)
+    per_stock_target = (bucket_target_inr / len(members)
+                        if bucket_target_inr is not None else None)
+
+    out = []
+    for r in sorted(members, key=lambda x: -x["current_value_inr"]):
+        current = r["current_value_inr"]
+        share = (current / bucket_current * 100) if bucket_current > 0 else 0.0
+        entry = {
+            "symbol": r["symbol"],
+            "company_name": r["company_name"],
+            "current_inr": round(current, 2),
+            "current_percent": round(share, 2),
+            "target_percent": None,
+            "target_inr": None,
+            "delta_inr": None,
+        }
+        if per_stock_target is not None:
+            entry["target_percent"] = round(100.0 / len(members), 2)
+            entry["target_inr"] = round(per_stock_target, 2)
+            entry["delta_inr"] = round(current - per_stock_target, 2)
+        out.append(entry)
+    return out
 
 
 def _lines(actual: Dict[str, float], target_pct: Dict[str, float],
@@ -103,17 +150,20 @@ def compare(target, rows: List[Dict[str, Any]],
         if rule.market in rules and rule.dimension in rules[rule.market]:
             rules[rule.market][rule.dimension][rule.key] = rule.percent
 
-    breakdown = {
-        market: {
-            dimension: _lines(
-                _bucket(rows, market, dimension),
-                rules[market][dimension],
-                invested[market],
+    # Only the dimension that governs each market is reported.
+    breakdown = {}
+    for market in ("IND", "US"):
+        dimension = MARKET_DIMENSION[market]
+        lines = _lines(
+            _bucket(rows, market, dimension),
+            rules[market][dimension],
+            invested[market],
+        )
+        for line in lines:
+            line["stocks"] = _stocks_in_bucket(
+                rows, market, dimension, line["key"], line["target_inr"]
             )
-            for dimension in ("sector", "section")
-        }
-        for market in ("IND", "US")
-    }
+        breakdown[market] = {"dimension": dimension, "lines": lines}
 
     return {
         "target_id": target.id,

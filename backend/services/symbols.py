@@ -124,6 +124,26 @@ def resolve_quote_symbol(symbol: str) -> str:
     return TICKER_ALIASES.get(sym, sym)
 
 
+_US_SYMBOLS = set(US_COMPANY_NAMES.values())
+_IND_SYMBOLS = set(INDIAN_COMPANY_NAMES.values()) | set(TICKER_ALIASES.values())
+
+
+def guess_market(symbol: str) -> str:
+    """Best guess at the market a bare ticker belongs to: "US" or "IND".
+
+    Only a guess — the user confirms it before anything is saved. Indian
+    tickers are the safer default: they are long and varied, while the US
+    names we know are enumerated above.
+    """
+    sym = (symbol or "").strip().upper()
+    if sym in _IND_SYMBOLS:
+        return "IND"
+    if sym in _US_SYMBOLS:
+        return "US"
+    # US tickers are short and letters-only; NSE symbols are typically longer.
+    return "US" if sym.isalpha() and len(sym) <= 4 else "IND"
+
+
 def normalize_symbol(name_str: str) -> str:
     """Best-effort ticker for a company name read off a screenshot.
 

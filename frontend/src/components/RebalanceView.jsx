@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Target, Plus, Trash2, Edit2, X, AlertCircle, ArrowRight, Check } from 'lucide-react';
+import { Target, Plus, Trash2, Edit2, X, AlertCircle, ArrowRight, Check, ChevronRight } from 'lucide-react';
 
 const MARKETS = [
   { id: 'IND', label: '🇮🇳 India' },
@@ -205,9 +205,14 @@ function TargetEditor({ sectors, sections, existing, onClose, onSave }) {
 }
 
 // ─── Diff table ───────────────────────────────────────────────────────────────
-function DiffTable({ title, note, lines }) {
+// `expandable` turns each bucket row into a toggle that reveals the stocks
+// inside it, with an equal-weighted per-stock target.
+function DiffTable({ title, note, lines, expandable = false }) {
+  const [open, setOpen] = useState({});
   const rows = (lines || []).filter(l => l.target_percent != null || l.current_inr > 0);
   if (rows.length === 0) return null;
+
+  const colSpan = 6;
 
   return (
     <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden">
@@ -233,34 +238,113 @@ function DiffTable({ title, note, lines }) {
               const over = l.delta_inr > 0;
               // Under half a percent is noise, not a trade worth making.
               const onTarget = !untargeted && Math.abs(l.delta_percent) < 0.5;
+              const stocks = l.stocks || [];
+              const canExpand = expandable && stocks.length > 0;
+              const isOpen = !!open[l.key];
+
               return (
-                <tr key={l.key} className="hover:bg-slate-800/30">
-                  <td className="py-2.5 px-4 font-bold text-slate-100">{l.key}</td>
-                  <td className="py-2.5 px-4 text-right text-slate-300">{fmt(l.current_inr)}</td>
-                  <td className="py-2.5 px-4 text-right text-slate-300">{l.current_percent}%</td>
-                  <td className="py-2.5 px-4 text-right text-slate-400">
-                    {untargeted ? <span className="text-slate-600">not set</span> : `${l.target_percent}%`}
-                  </td>
-                  <td className="py-2.5 px-4 text-right text-slate-400">
-                    {untargeted ? <span className="text-slate-600">—</span> : fmt(l.target_inr)}
-                  </td>
-                  <td className="py-2.5 px-4 text-right">
-                    {untargeted ? (
-                      <span className="text-slate-600">—</span>
-                    ) : onTarget ? (
-                      <span className="text-[10px] font-bold text-emerald-400">On target</span>
-                    ) : (
-                      <div>
-                        <span className={`font-bold ${over ? 'text-rose-400' : 'text-emerald-400'}`}>
-                          {over ? 'REDUCE' : 'ADD'} {fmt(Math.abs(l.delta_inr))}
-                        </span>
-                        <div className={`text-[10px] ${over ? 'text-rose-500/80' : 'text-emerald-500/80'}`}>
-                          {over ? '+' : ''}{l.delta_percent}% vs target
+                <React.Fragment key={l.key}>
+                  <tr
+                    className={`hover:bg-slate-800/30 ${canExpand ? 'cursor-pointer' : ''}`}
+                    onClick={canExpand ? () => setOpen(o => ({ ...o, [l.key]: !o[l.key] })) : undefined}
+                  >
+                    <td className="py-2.5 px-4 font-bold text-slate-100">
+                      <span className="flex items-center gap-1.5">
+                        {canExpand && (
+                          <ChevronRight className={`w-3 h-3 text-slate-500 transition-transform ${isOpen ? 'rotate-90' : ''}`} />
+                        )}
+                        {l.key}
+                        {canExpand && (
+                          <span className="text-[9px] font-semibold text-slate-500">
+                            ({stocks.length})
+                          </span>
+                        )}
+                      </span>
+                    </td>
+                    <td className="py-2.5 px-4 text-right text-slate-300">{fmt(l.current_inr)}</td>
+                    <td className="py-2.5 px-4 text-right text-slate-300">{l.current_percent}%</td>
+                    <td className="py-2.5 px-4 text-right text-slate-400">
+                      {untargeted ? <span className="text-slate-600">not set</span> : `${l.target_percent}%`}
+                    </td>
+                    <td className="py-2.5 px-4 text-right text-slate-400">
+                      {untargeted ? <span className="text-slate-600">—</span> : fmt(l.target_inr)}
+                    </td>
+                    <td className="py-2.5 px-4 text-right">
+                      {untargeted ? (
+                        <span className="text-slate-600">—</span>
+                      ) : onTarget ? (
+                        <span className="text-[10px] font-bold text-emerald-400">On target</span>
+                      ) : (
+                        <div>
+                          <span className={`font-bold ${over ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            {over ? 'REDUCE' : 'ADD'} {fmt(Math.abs(l.delta_inr))}
+                          </span>
+                          <div className={`text-[10px] ${over ? 'text-rose-500/80' : 'text-emerald-500/80'}`}>
+                            {over ? '+' : ''}{l.delta_percent}% vs target
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </td>
-                </tr>
+                      )}
+                    </td>
+                  </tr>
+
+                  {canExpand && isOpen && (
+                    <tr className="bg-slate-900/40">
+                      <td colSpan={colSpan} className="px-4 py-3">
+                        <p className="text-[10px] text-slate-500 mb-2">
+                          Equal-weighted target inside {l.key}
+                          {l.target_percent != null && ` — ${fmt(l.target_inr)} across ${stocks.length} stock${stocks.length === 1 ? '' : 's'}`}.
+                          Percentages are share of the bucket.
+                        </p>
+                        <table className="w-full text-left border-collapse text-[11px]">
+                          <thead>
+                            <tr className="text-[9px] font-bold text-slate-500 uppercase tracking-wider border-b border-slate-800">
+                              <th className="py-1.5 pr-3">Stock</th>
+                              <th className="py-1.5 px-2 text-right">Current</th>
+                              <th className="py-1.5 px-2 text-right">Current %</th>
+                              <th className="py-1.5 px-2 text-right">Target %</th>
+                              <th className="py-1.5 px-2 text-right">Target ₹</th>
+                              <th className="py-1.5 pl-2 text-right">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-800/40">
+                            {stocks.map(s => {
+                              const sOver = s.delta_inr > 0;
+                              const sOnTarget = s.target_inr != null
+                                && Math.abs(s.delta_inr) < Math.max(s.target_inr * 0.02, 500);
+                              return (
+                                <tr key={s.symbol}>
+                                  <td className="py-1.5 pr-3">
+                                    <span className="font-bold text-slate-200">{s.symbol}</span>
+                                    <span className="text-slate-500 ml-2 truncate">{s.company_name}</span>
+                                  </td>
+                                  <td className="py-1.5 px-2 text-right text-slate-300">{fmt(s.current_inr)}</td>
+                                  <td className="py-1.5 px-2 text-right text-slate-300">{s.current_percent}%</td>
+                                  <td className="py-1.5 px-2 text-right text-slate-400">
+                                    {s.target_percent == null ? '—' : `${s.target_percent}%`}
+                                  </td>
+                                  <td className="py-1.5 px-2 text-right text-slate-400">
+                                    {s.target_inr == null ? '—' : fmt(s.target_inr)}
+                                  </td>
+                                  <td className="py-1.5 pl-2 text-right">
+                                    {s.delta_inr == null ? (
+                                      <span className="text-slate-600">—</span>
+                                    ) : sOnTarget ? (
+                                      <span className="text-[9px] font-bold text-emerald-400">On target</span>
+                                    ) : (
+                                      <span className={`font-bold ${sOver ? 'text-rose-400' : 'text-emerald-400'}`}>
+                                        {sOver ? 'REDUCE' : 'ADD'} {fmt(Math.abs(s.delta_inr))}
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -485,20 +569,19 @@ export default function RebalanceView() {
             lines={diff.cash}
           />
 
-          {MARKETS.map(m => (
-            <React.Fragment key={m.id}>
+          {MARKETS.map(m => {
+            const b = diff.breakdown[m.id];
+            const dimLabel = b.dimension === 'sector' ? 'Sectors' : 'Sections';
+            return (
               <DiffTable
-                title={`${m.label} · Sectors`}
-                note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}).`}
-                lines={diff.breakdown[m.id].sector}
+                key={m.id}
+                title={`${m.label} · ${dimLabel}`}
+                note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}). Click a row for the stocks inside it.`}
+                lines={b.lines}
+                expandable
               />
-              <DiffTable
-                title={`${m.label} · Sections`}
-                note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}).`}
-                lines={diff.breakdown[m.id].section}
-              />
-            </React.Fragment>
-          ))}
+            );
+          })}
         </div>
       )}
 

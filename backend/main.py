@@ -15,8 +15,10 @@ from database import engine, get_db
 from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
-from services import target_engine, taxonomy
-from services.quote_service import fetch_live_prices_batch, fetch_usd_to_inr_rate, fetch_sectors_batch
+from services import history_engine, target_engine, taxonomy
+from services.quote_service import (fetch_live_prices_batch, fetch_sector,
+                                   fetch_sectors_batch, fetch_usd_to_inr_rate)
+from services.symbols import guess_market, normalize_symbol
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -587,7 +589,7 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
 
 @app.get("/api/classification")
 def get_classification(db: Session = Depends(get_db)):
-    """One row per distinct symbol, with holdings rolled up across accounts."""
+    """One row per distinct symbol: held positions plus watch-list stocks."""
     holdings = db.query(models.Holding).all()
     _resolve_sectors(db, holdings)
 
@@ -606,20 +608,40 @@ def get_classification(db: Session = Depends(get_db)):
                 "section": h.section or taxonomy.DEFAULT_SECTION,
                 "quantity": 0.0,
                 "accounts": [],
+                "held": True,
             }
         row["quantity"] += h.quantity
         name = accounts.get(h.account_id)
         if name and name not in row["accounts"]:
             row["accounts"].append(name)
 
-    rows = sorted(
-        by_symbol.values(),
-        key=lambda r: (r["sector"], r["section"], r["symbol"]),
-    )
+    # Watch-list entries only surface when nothing is actually held under that
+    # symbol — once bought, the real holding is the source of truth.
+    for w in db.query(models.WatchStock).all():
+        key = (w.symbol.strip().upper(), w.country or "IND")
+        if key in by_symbol:
+            continue
+        by_symbol[key] = {
+            "symbol": key[0],
+            "company_name": w.company_name or key[0],
+            "country": key[1],
+            "sector": w.sector or taxonomy.DEFAULT_SECTOR,
+            "section": w.section or taxonomy.DEFAULT_SECTION,
+            "quantity": 0.0,
+            "accounts": [],
+            "held": False,
+        }
+
+    rows = sorted(by_symbol.values(), key=lambda r: (r["sector"], r["section"], r["symbol"]))
     for r in rows:
         r["quantity"] = round(r["quantity"], 4)
 
-    return {"sectors": taxonomy.SECTORS, "sections": taxonomy.SECTIONS, "rows": rows}
+    return {
+        "sectors": taxonomy.SECTORS,
+        "sections": taxonomy.SECTIONS,
+        "account_names": sorted(accounts.values()),
+        "rows": rows,
+    }
 
 
 @app.put("/api/classification/{symbol}")
@@ -639,18 +661,208 @@ def update_classification(
     if payload.country:
         query = query.filter(models.Holding.country == payload.country)
     holdings = query.all()
-    if not holdings:
-        raise HTTPException(status_code=404, detail=f"No holdings for {sym}")
 
-    for h in holdings:
-        if payload.sector is not None:
-            h.sector = payload.sector
-        if payload.section is not None:
-            h.section = payload.section
+    if holdings:
+        for h in holdings:
+            if payload.sector is not None:
+                h.sector = payload.sector
+            if payload.section is not None:
+                h.section = payload.section
+        db.commit()
+        return {"symbol": sym, "updated": len(holdings),
+                "sector": holdings[0].sector, "section": holdings[0].section}
+
+    watch_q = db.query(models.WatchStock).filter(models.WatchStock.symbol == sym)
+    if payload.country:
+        watch_q = watch_q.filter(models.WatchStock.country == payload.country)
+    watch = watch_q.first()
+    if not watch:
+        raise HTTPException(status_code=404, detail=f"No holdings or watch entry for {sym}")
+
+    if payload.sector is not None:
+        watch.sector = payload.sector
+    if payload.section is not None:
+        watch.section = payload.section
     db.commit()
+    return {"symbol": sym, "updated": 1,
+            "sector": watch.sector, "section": watch.section}
 
-    return {"symbol": sym, "updated": len(holdings),
-            "sector": holdings[0].sector, "section": holdings[0].section}
+
+def _propose(symbol: str, company_name: str = "", country: str = "") -> Dict[str, Any]:
+    """Resolve a user-typed name into a classified proposal (nothing saved)."""
+    raw = (symbol or "").strip()
+    sym = normalize_symbol(raw) or raw.upper()
+    resolved = (country or "").upper() or guess_market(sym)
+    scraped = fetch_sector(sym, resolved) or ""
+    return {
+        "symbol": sym,
+        "company_name": company_name.strip() or raw,
+        "country": resolved,
+        "sector": taxonomy.default_sector(sym, resolved, scraped),
+        "section": taxonomy.default_section(sym),
+        "input": raw,
+    }
+
+
+@app.post("/api/classification/resolve")
+def resolve_classification(payload: schemas.ResolveStocksRequest,
+                           db: Session = Depends(get_db)):
+    """Classify typed stock names. Returns proposals for the user to confirm."""
+    names = [n.strip() for n in (payload.names or []) if n and n.strip()]
+    if not names:
+        raise HTTPException(status_code=400, detail="No stock names provided")
+
+    existing = {
+        (h.symbol.strip().upper(), h.country or "IND")
+        for h in db.query(models.Holding).all()
+    } | {
+        (w.symbol.strip().upper(), w.country or "IND")
+        for w in db.query(models.WatchStock).all()
+    }
+
+    proposals = []
+    seen = set()
+    for name in names:
+        p = _propose(name)
+        key = (p["symbol"], p["country"])
+        if key in seen:
+            continue
+        seen.add(key)
+        p["already_exists"] = key in existing
+        proposals.append(p)
+    return {"sectors": taxonomy.SECTORS, "sections": taxonomy.SECTIONS,
+            "proposals": proposals}
+
+
+@app.post("/api/classification/resolve-image")
+async def resolve_classification_image(files: List[UploadFile] = File(...),
+                                       db: Session = Depends(get_db)):
+    """Same as /resolve, but reads the stock names off a screenshot."""
+    if not files:
+        raise HTTPException(status_code=400, detail="No screenshot files provided")
+
+    parsed = []
+    for file in files:
+        parsed.extend(PortfolioOCREngine.process_image(await file.read()))
+    if not parsed:
+        return {"sectors": taxonomy.SECTORS, "sections": taxonomy.SECTIONS,
+                "proposals": [],
+                "warnings": ["No stock names detected in the uploaded screenshot(s)."]}
+
+    existing = {
+        (h.symbol.strip().upper(), h.country or "IND")
+        for h in db.query(models.Holding).all()
+    } | {
+        (w.symbol.strip().upper(), w.country or "IND")
+        for w in db.query(models.WatchStock).all()
+    }
+
+    proposals = []
+    seen = set()
+    for item in parsed:
+        p = _propose(item.get("symbol", ""), item.get("company_name", ""))
+        key = (p["symbol"], p["country"])
+        if not p["symbol"] or key in seen:
+            continue
+        seen.add(key)
+        p["already_exists"] = key in existing
+        proposals.append(p)
+    return {"sectors": taxonomy.SECTORS, "sections": taxonomy.SECTIONS,
+            "proposals": proposals, "warnings": []}
+
+
+@app.post("/api/classification/stocks")
+def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(get_db)):
+    """Commit confirmed proposals to the watch list."""
+    added, skipped = [], []
+    for item in payload.stocks:
+        sym = item.symbol.strip().upper()
+        if not sym:
+            continue
+        country = (item.country or "IND").upper()
+        if country not in ("IND", "US"):
+            raise HTTPException(status_code=400, detail=f"Unknown market: {country}")
+        if item.sector and item.sector not in taxonomy.SECTORS:
+            raise HTTPException(status_code=400, detail=f"Unknown sector: {item.sector}")
+        if item.section and item.section not in taxonomy.SECTIONS:
+            raise HTTPException(status_code=400, detail=f"Unknown section: {item.section}")
+
+        held = db.query(models.Holding).filter(
+            models.Holding.symbol == sym, models.Holding.country == country
+        ).first()
+        if held:
+            skipped.append(sym)
+            continue
+
+        watch = db.query(models.WatchStock).filter(
+            models.WatchStock.symbol == sym, models.WatchStock.country == country
+        ).first()
+        if watch:
+            watch.company_name = item.company_name or watch.company_name
+            watch.sector = item.sector or watch.sector
+            watch.section = item.section or watch.section
+        else:
+            db.add(models.WatchStock(
+                symbol=sym,
+                company_name=item.company_name or sym,
+                country=country,
+                sector=item.sector or taxonomy.DEFAULT_SECTOR,
+                section=item.section or taxonomy.DEFAULT_SECTION,
+            ))
+        added.append(sym)
+    db.commit()
+    return {"added": added, "skipped": skipped}
+
+
+@app.delete("/api/classification/stocks/{symbol}")
+def delete_watch_stock(symbol: str, country: str = "IND", db: Session = Depends(get_db)):
+    """Removes a watch-list entry. Held positions are never touched."""
+    watch = db.query(models.WatchStock).filter(
+        models.WatchStock.symbol == symbol.strip().upper(),
+        models.WatchStock.country == country.upper(),
+    ).first()
+    if not watch:
+        raise HTTPException(status_code=404, detail="Watch-list entry not found")
+    db.delete(watch)
+    db.commit()
+    return {"message": "Removed from watch list"}
+
+
+@app.get("/api/portfolios/{portfolio_id}/history")
+def get_portfolio_history(portfolio_id: str, range: str = "3mo",
+                          db: Session = Depends(get_db)):
+    """Portfolio value over time against Nifty 50, Nasdaq and the S&P 500.
+
+    Reconstructed from current quantities priced at each day's close — see
+    history_engine for what that does and does not represent.
+    """
+    portfolio = db.query(models.Portfolio).filter(
+        models.Portfolio.id == portfolio_id
+    ).first()
+    if not portfolio:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+
+    accounts = [link.account for link in portfolio.account_links if link.account]
+    account_ids = [a.id for a in accounts]
+    holdings = (
+        db.query(models.Holding).filter(models.Holding.account_id.in_(account_ids)).all()
+        if account_ids else []
+    )
+    account_map = {a.id: a for a in accounts}
+
+    rows = [
+        {
+            "symbol": h.symbol,
+            "quantity": h.quantity,
+            "country": "US" if account_currency(account_map.get(h.account_id)) == "USD" else "IND",
+        }
+        for h in holdings
+    ]
+
+    result = history_engine.build_history(rows, range)
+    result["portfolio_id"] = portfolio_id
+    result["portfolio_name"] = portfolio.name
+    return result
 
 
 # ─────────────────────────────────────────────────────────────

@@ -58,6 +58,23 @@ class PortfolioCreate(BaseModel):
     account_ids: List[str]
 
 
+class ResolveStocksRequest(BaseModel):
+    """Free-text stock names to classify, before anything is saved."""
+    names: List[str]
+
+
+class StockClassification(BaseModel):
+    symbol: str
+    company_name: Optional[str] = ""
+    country: Optional[str] = "IND"
+    sector: Optional[str] = None
+    section: Optional[str] = None
+
+
+class AddStocksRequest(BaseModel):
+    stocks: List[StockClassification]
+
+
 class ClassificationUpdate(BaseModel):
     sector: Optional[str] = None
     section: Optional[str] = None

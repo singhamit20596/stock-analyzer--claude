@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Table, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime, timezone
 import uuid
@@ -40,6 +40,25 @@ class Holding(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     account = relationship("Account", back_populates="holdings")
+
+
+class WatchStock(Base):
+    """A stock classified but not held in any account.
+
+    Added from the Classification tab so a name can be planned for — it carries
+    sector/section but contributes no value to any portfolio.
+    """
+    __tablename__ = "watch_stocks"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    symbol = Column(String, nullable=False)
+    company_name = Column(String, nullable=False, default="")
+    country = Column(String, default="IND")     # "IND" or "US"
+    sector = Column(String, nullable=True)
+    section = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (UniqueConstraint("symbol", "country", name="uq_watch_symbol_country"),)
 
 
 class TargetPortfolio(Base):
