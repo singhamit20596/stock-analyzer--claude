@@ -147,13 +147,37 @@ def _resolve_sectors(db: Session, holdings: List[models.Holding]) -> Dict[Tuple[
             h.section = taxonomy.default_section(h.symbol)
         db.commit()
 
-    return {
-        (h.symbol.strip().upper(), h.country or "IND"): {
-            "sector": h.sector or taxonomy.DEFAULT_SECTOR,
-            "section": h.section or taxonomy.DEFAULT_SECTION,
-        }
-        for h in holdings
-    }
+    # Classification is per stock, but it is stored per holding row — so the
+    # same stock held in two accounts has two rows that can drift apart (a
+    # re-import used to reset one of them to the default). Once they disagree,
+    # every reader picks a different winner depending on row order, and the UI
+    # contradicts itself. Converge them here, preferring the value that is not
+    # the fallback: a wipe reverts to the default, so the non-default side is
+    # the user's actual edit.
+    grouped: Dict[Tuple[str, str], List[models.Holding]] = {}
+    for h in holdings:
+        grouped.setdefault((h.symbol.strip().upper(), h.country or "IND"), []).append(h)
+
+    def agree(rows: List[models.Holding], field: str, fallback: str) -> str:
+        values = [getattr(r, field) for r in rows if getattr(r, field)]
+        if not values:
+            return fallback
+        return next((v for v in values if v != fallback), values[0])
+
+    resolved: Dict[Tuple[str, str], Dict[str, str]] = {}
+    drifted = False
+    for key, rows in grouped.items():
+        sector = agree(rows, "sector", taxonomy.DEFAULT_SECTOR)
+        section = agree(rows, "section", taxonomy.DEFAULT_SECTION)
+        for r in rows:
+            if r.sector != sector or r.section != section:
+                r.sector, r.section = sector, section
+                drifted = True
+        resolved[key] = {"sector": sector, "section": section}
+    if drifted:
+        db.commit()
+
+    return resolved
 
 
 @app.get("/api/accounts/{account_id}/screenshot")
@@ -605,7 +629,7 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
 def get_classification(db: Session = Depends(get_db)):
     """One row per distinct symbol: held positions plus watch-list stocks."""
     holdings = db.query(models.Holding).all()
-    _resolve_sectors(db, holdings)
+    classified = _resolve_sectors(db, holdings)
 
     accounts = {a.id: a.name for a in db.query(models.Account).all()}
 
@@ -614,12 +638,15 @@ def get_classification(db: Session = Depends(get_db)):
         key = (h.symbol.strip().upper(), h.country or "IND")
         row = by_symbol.get(key)
         if row is None:
+            # Take the classification from the resolver, not from this row —
+            # it is the one value every other view will also see.
+            meta = classified.get(key, {})
             row = by_symbol[key] = {
                 "symbol": key[0],
                 "company_name": h.company_name,
                 "country": key[1],
-                "sector": h.sector or taxonomy.DEFAULT_SECTOR,
-                "section": h.section or taxonomy.DEFAULT_SECTION,
+                "sector": meta.get("sector") or taxonomy.DEFAULT_SECTOR,
+                "section": meta.get("section") or taxonomy.DEFAULT_SECTION,
                 "quantity": 0.0,
                 "accounts": [],
                 "held": True,
