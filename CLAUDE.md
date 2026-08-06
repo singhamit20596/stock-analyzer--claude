@@ -83,6 +83,41 @@ block — **not** vector RAG. At this size full context is simpler and more
 accurate; retrieval only adds a way to miss the row that matters. Revisit if
 holdings grow past a few hundred.
 
+## Stock deep-dive — verified data sources (spike done 2026-08-06)
+
+Planned feature: click a stock row -> full analysis page. **Do not use
+`yfinance`.** It is a Yahoo scraper and Yahoo hard-blocks this IP (429 on every
+endpoint, verified twice hours apart). Use these instead:
+
+| Need | Source | Notes |
+|---|---|---|
+| US OHLCV | `api.nasdaq.com/api/quote/{sym}/historical` | already in `history_source.py` |
+| US ratios / sector / 52w / analyst target | `api.nasdaq.com/api/quote/{sym}/summary?assetclass=stocks` | `OneYrTarget` is the analyst price target |
+| US financials | `api.nasdaq.com/api/company/{sym}/financials?frequency=1` | income statement, balance sheet, cash flow, ratios |
+| IND OHLCV | Groww charting v1 | already in `history_source.py`; returns `changePerc` free |
+| IND fundamentals | `screener.in/company/{SYMBOL}/` | HTML scrape — see parsing note below |
+| IND company info | `api.tickertape.in/stocks/info/{sid}` | `sid` from `api.tickertape.in/search?text={sym}&types=stock` |
+
+Dead ends already tried: NSE official API (403), Groww `accord_points`
+(502/404), tickertape `financials`/`ratios` (400/404, undocumented params).
+
+**screener.in parsing:** ratios live in `<ul id="top-ratios">`, and the value
+span is `class="nowrap value"` — matching on `class="value"` finds nothing.
+Quarterly results are in `<section id="quarters">`. `High / Low` holds two
+numbers in one span; take both.
+
+Design decisions from the plan review:
+- Lead the page with **the user's own position** (units, avg cost, P&L, % of
+  portfolio, sector/section, target-bucket drift). That's the part a generic
+  stock site cannot show and the reason to open the page.
+- **No computed BUY/HOLD/SELL badge.** Show indicators as inputs and hand off to
+  the assistant, which cites sources and carries the not-advice note.
+- ETFs (VOO, QQQM, SOXX, ITBEES, NIFTYIETF) have no P/E, ROE, EPS or quarterly
+  results — they need a separate variant, not empty ratio cards.
+- 1D/5D need intraday data the daily endpoints do not serve; cap the range at
+  5Y (Groww's window will not reach 10Y reliably).
+- Cache fundamentals 6-24h, as `history_source` does.
+
 ## Conventions
 
 - Comments explain *why*, not what. Don't narrate the code.
