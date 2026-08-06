@@ -1155,6 +1155,25 @@ def get_sync_logs(db: Session = Depends(get_db)):
 
 
 # ─────────────────────────────────────────────────────────────
+# STOCK DEEP-DIVE ANALYSIS
+# ─────────────────────────────────────────────────────────────
+
+@app.get("/api/stock/{symbol}/analysis")
+def get_stock_analysis(
+    symbol: str,
+    country: str = Query("IND"),
+    chart_period: str = Query("1Y"),
+):
+    """Full stock analysis: company info, chart, technicals, ratios,
+    quarterly results, insights, and buy/hold/sell recommendation."""
+    from services.stock_analysis import get_stock_analysis as _analyze
+    try:
+        return _analyze(symbol, country, chart_period)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+
+
+# ─────────────────────────────────────────────────────────────
 # SERVE FRONTEND STATIC FILES
 # ─────────────────────────────────────────────────────────────
 

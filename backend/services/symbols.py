@@ -96,6 +96,8 @@ _NAME_KEYS_BY_LENGTH = sorted(COMPANY_NAME_TO_SYMBOL, key=len, reverse=True)
 # Tickers that a broker or an earlier OCR run may have stored in a truncated or
 # non-canonical form -> the symbol NSE (and therefore the quote APIs) expects.
 TICKER_ALIASES = {
+    # OCR reads the company name where the ticker should be.
+    "VISA": "V",
     "APTUSVALUE": "APTUS",
     "CANARABANK": "CANBK",
     "FORTISHEAL": "FORTIS",

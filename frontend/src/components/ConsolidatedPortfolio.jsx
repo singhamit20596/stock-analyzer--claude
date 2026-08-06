@@ -112,7 +112,7 @@ function PortfolioCreatorModal({ accounts, existingPortfolio, onClose, onSave })
 }
 
 // ─── Portfolio Table View ──────────────────────────────────────────────────────
-function PortfolioTableView({ portfolioId }) {
+function PortfolioTableView({ portfolioId, onSelectStock }) {
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -375,11 +375,17 @@ function PortfolioTableView({ portfolioId }) {
               {sorted.map((row) => {
                 const pnlPos = row.pnl_percent >= 0;
                 return (
-                  <tr key={`${row.symbol}-${row.currency}`} className="hover:bg-slate-800/30 transition-colors">
-                    <td className="py-3 px-3 sticky left-0 bg-slate-950/90">
+                  <tr
+                    key={`${row.symbol}-${row.currency}`}
+                    onClick={() => onSelectStock && onSelectStock(row.symbol, row.country)}
+                    className="hover:bg-slate-800/60 cursor-pointer transition-colors group"
+                  >
+                    <td className="py-3 px-3 sticky left-0 bg-slate-950/90 group-hover:bg-slate-900/90 transition-colors">
                       <div className="flex items-center space-x-2">
                         <div>
-                          <div className="font-bold text-slate-100">{row.symbol}</div>
+                          <div className="font-bold text-slate-100 group-hover:text-indigo-400 flex items-center gap-1 transition-colors">
+                            {row.symbol}
+                          </div>
                           <div className="text-[10px] text-slate-400 truncate max-w-[140px]">{row.company_name}</div>
                           <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded mt-0.5 inline-block ${
                             row.country === 'US'
@@ -459,7 +465,7 @@ function PortfolioTableView({ portfolioId }) {
 }
 
 // ─── Main ConsolidatedPortfolio Component ─────────────────────────────────────
-export default function ConsolidatedPortfolio({ accounts }) {
+export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
   const [portfolios, setPortfolios] = useState([]);
   const [selectedPortfolioId, setSelectedPortfolioId] = useState(null);
   const [showCreator, setShowCreator] = useState(false);
@@ -600,7 +606,7 @@ export default function ConsolidatedPortfolio({ accounts }) {
 
       {/* Portfolio Table */}
       {selectedPortfolioId && (
-        <PortfolioTableView key={selectedPortfolioId} portfolioId={selectedPortfolioId} />
+        <PortfolioTableView key={selectedPortfolioId} portfolioId={selectedPortfolioId} onSelectStock={onSelectStock} />
       )}
 
       {/* Portfolio Creator/Editor Modal */}

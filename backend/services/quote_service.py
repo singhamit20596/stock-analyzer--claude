@@ -120,11 +120,18 @@ def fetch_usd_to_inr_rate() -> float:
     return USD_INR_CACHE["rate"]
 
 
+# Google Finance needs the exchange in the URL, so every candidate is tried in
+# turn. Ordinary shares list on NASDAQ or NYSE; ETFs mostly sit on NYSEARCA or
+# BATS, which is why VOO and IGV returned nothing until those were added.
+# Ordered by how often each hits, since the first match wins.
+US_EXCHANGES = ('NASDAQ', 'NYSE', 'NYSEARCA', 'BATS')
+
+
 def _fetch_us_quote(symbol: str) -> float:
     try:
         with httpx.Client(follow_redirects=True, headers=BROWSER_HEADERS,
                           timeout=PAGE_TIMEOUT) as client:
-            for exchange in ('NASDAQ', 'NYSE'):
+            for exchange in US_EXCHANGES:
                 price = _scrape_google_finance(client, f"{symbol}:{exchange}")
                 if price > 0:
                     return price

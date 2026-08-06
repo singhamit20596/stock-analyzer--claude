@@ -8,10 +8,12 @@ import RebalanceView from './components/RebalanceView';
 import SyncLogsView from './components/SyncLogsView';
 import ClassificationView from './components/ClassificationView';
 import VerificationModal from './components/VerificationModal';
+import StockDetailPage from './components/StockDetailPage';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'portfolio');
   const [accounts, setAccounts] = useState([]);
+  const [stockDrilldown, setStockDrilldown] = useState(null); // { symbol, country }
 
   // Holdings parsed out of a screenshot, awaiting the user's review.
   const [verificationModal, setVerificationModal] = useState({
@@ -124,7 +126,10 @@ export default function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-6">
         {activeTab === 'chat' && <ChatView />}
         {activeTab === 'portfolio' && (
-          <ConsolidatedPortfolio accounts={accounts} />
+          <ConsolidatedPortfolio
+            accounts={accounts}
+            onSelectStock={(symbol, country) => setStockDrilldown({ symbol, country })}
+          />
         )}
         {activeTab === 'account-detail' && (
           <AccountDetailView
@@ -152,6 +157,14 @@ export default function App() {
           targetAccountId={verificationModal.targetAccountId}
           onClose={() => setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null })}
           onSave={handleSaveVerifiedHoldings}
+        />
+      )}
+
+      {stockDrilldown && (
+        <StockDetailPage
+          symbol={stockDrilldown.symbol}
+          country={stockDrilldown.country}
+          onClose={() => setStockDrilldown(null)}
         />
       )}
     </div>
