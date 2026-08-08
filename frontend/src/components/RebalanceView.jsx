@@ -207,7 +207,7 @@ function TargetEditor({ sectors, sections, existing, onClose, onSave }) {
 // ─── Diff table ───────────────────────────────────────────────────────────────
 // `expandable` turns each bucket row into a toggle that reveals the stocks
 // inside it, with an equal-weighted per-stock target.
-function DiffTable({ title, note, lines, expandable = false }) {
+function DiffTable({ title, note, lines, expandable = false, market, onSelectStock }) {
   const [open, setOpen] = useState({});
   const rows = (lines || []).filter(l => l.target_percent != null || l.current_inr > 0);
   if (rows.length === 0) return null;
@@ -314,7 +314,17 @@ function DiffTable({ title, note, lines, expandable = false }) {
                               return (
                                 <tr key={s.symbol}>
                                   <td className="py-1.5 pr-3">
-                                    <span className="font-bold text-slate-200">{s.symbol}</span>
+                                    {/* Only the ticker opens the deep dive: the row
+                                        itself sits inside a bucket toggle. */}
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        onSelectStock && onSelectStock(s.symbol, market);
+                                      }}
+                                      className="font-bold text-slate-200 hover:text-indigo-400 transition-colors"
+                                    >
+                                      {s.symbol}
+                                    </button>
                                     <span className="text-slate-500 ml-2 truncate">{s.company_name}</span>
                                   </td>
                                   <td className="py-1.5 px-2 text-right text-slate-300">{fmt(s.current_inr)}</td>
@@ -355,7 +365,7 @@ function DiffTable({ title, note, lines, expandable = false }) {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
-export default function RebalanceView() {
+export default function RebalanceView({ onSelectStock }) {
   const [meta, setMeta] = useState({ sectors: [], sections: [], targets: [] });
   const [portfolios, setPortfolios] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -579,6 +589,8 @@ export default function RebalanceView() {
                 note={`Share of ${m.id} invested money (${fmt(diff.invested_inr[m.id])}). Click a row for the stocks inside it.`}
                 lines={b.lines}
                 expandable
+                market={m.id}
+                onSelectStock={onSelectStock}
               />
             );
           })}

@@ -2,7 +2,10 @@ import os
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "portfolio.db")
+# Overridable so the app can be pointed at a scratch copy — useful for trying
+# something out without touching the real holdings.
+DB_PATH = os.environ.get("STOCKS_DB_PATH") or os.path.join(
+    os.path.dirname(__file__), "portfolio.db")
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
 engine = create_engine(

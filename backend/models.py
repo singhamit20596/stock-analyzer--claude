@@ -7,10 +7,42 @@ from database import Base
 def generate_uuid():
     return str(uuid.uuid4())
 
+
+class User(Base):
+    """A login. The first one to register becomes the admin.
+
+    Portfolios, accounts, targets and watch-list stocks all belong to a user;
+    the admin may additionally view any other user's data read-only.
+    """
+    __tablename__ = "users"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    username = Column(String, nullable=False, unique=True)
+    # PBKDF2-HMAC-SHA256, salt and iteration count encoded alongside the digest.
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False, default="user")  # "admin" or "user"
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
+class UserSession(Base):
+    """An issued login token.
+
+    Only the token's SHA-256 is stored, so a copy of the database does not hand
+    over live sessions.
+    """
+    __tablename__ = "user_sessions"
+
+    token_hash = Column(String, primary_key=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    expires_at = Column(DateTime, nullable=False)
+
+
 class Account(Base):
     __tablename__ = "accounts"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     name = Column(String, nullable=False)
     currency_type = Column(String, default="IND")  # "IND" (₹ INR) or "US" ($ USD)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
@@ -55,6 +87,7 @@ class WatchStock(Base):
     __tablename__ = "watch_stocks"
 
     id = Column(String, primary_key=True, default=generate_uuid)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
     symbol = Column(String, nullable=False)
     company_name = Column(String, nullable=False, default="")
     country = Column(String, default="IND")     # "IND" or "US"
@@ -62,7 +95,10 @@ class WatchStock(Base):
     section = Column(String, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
-    __table_args__ = (UniqueConstraint("symbol", "country", name="uq_watch_symbol_country"),)
+    # Scoped to the owner: two users watching the same stock are two rows.
+    __table_args__ = (
+        UniqueConstraint("user_id", "symbol", "country", name="uq_watch_user_symbol_country"),
+    )
 
 
 class TargetPortfolio(Base):
@@ -74,7 +110,9 @@ class TargetPortfolio(Base):
     __tablename__ = "target_portfolios"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    name = Column(String, nullable=False, unique=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    # Unique per owner, not globally: two users may both have a "Target 1".
+    name = Column(String, nullable=False)
     ind_percent = Column(Float, default=50.0)   # of total money; US is the remainder
     ind_cash_percent = Column(Float, default=0.0)  # cash as % of that market's money
     us_cash_percent = Column(Float, default=0.0)
@@ -82,6 +120,8 @@ class TargetPortfolio(Base):
 
     rules = relationship("TargetRule", back_populates="target",
                          cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_target_user_name"),)
 
 
 class TargetRule(Base):
@@ -112,10 +152,42 @@ class Portfolio(Base):
     __tablename__ = "portfolios"
 
     id = Column(String, primary_key=True, default=generate_uuid)
-    name = Column(String, nullable=False, unique=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=True, index=True)
+    # Unique per owner, not globally.
+    name = Column(String, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     account_links = relationship("PortfolioAccount", back_populates="portfolio", cascade="all, delete-orphan")
+
+    __table_args__ = (UniqueConstraint("user_id", "name", name="uq_portfolio_user_name"),)
+
+
+class PortfolioDailySnapshot(Base):
+    """What a portfolio was actually worth on a given day.
+
+    The performance chart reconstructs the past by valuing *today's* quantities
+    at old closes, so it cannot show what the portfolio really did — a position
+    bought last week is priced as though it had been held all along. These rows
+    are the real record: each one is written from live values while the user has
+    the app open, so the series only becomes true from the day recording starts.
+
+    Rows accumulate forever; the UI shows the most recent 30.
+    """
+    __tablename__ = "portfolio_daily_snapshots"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    portfolio_id = Column(String, ForeignKey("portfolios.id"), nullable=False)
+    # Local calendar date. One row per portfolio per day, overwritten through
+    # the day, so the stored value is the last one seen that day.
+    snapshot_date = Column(String, nullable=False)   # "YYYY-MM-DD"
+    invested_inr = Column(Float, nullable=False, default=0.0)
+    current_value_inr = Column(Float, nullable=False, default=0.0)
+    recorded_at = Column(DateTime, default=lambda: datetime.now(timezone.utc),
+                         onupdate=lambda: datetime.now(timezone.utc))
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", "snapshot_date", name="uq_snapshot_portfolio_day"),
+    )
 
 
 class PortfolioAccount(Base):

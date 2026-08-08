@@ -8,7 +8,7 @@ const UPDATE_TYPES = {
   BOTH: 'both',
 };
 
-export default function AccountDetailView({ accounts, onImageOCRUpload }) {
+export default function AccountDetailView({ accounts, onImageOCRUpload, onSelectStock }) {
   const [selectedAccountId, setSelectedAccountId] = useState('');
   const [accountData, setAccountData] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -585,7 +585,11 @@ export default function AccountDetailView({ accounts, onImageOCRUpload }) {
                   {items.map((item) => {
                     const pnlPos = item.pnl >= 0;
                     return (
-                      <tr key={item.id} className="hover:bg-slate-800/30 transition-colors">
+                      <tr
+                        key={item.id}
+                        onClick={() => onSelectStock && onSelectStock(item.symbol, isUSAccount ? 'US' : 'IND')}
+                        className="hover:bg-slate-800/30 transition-colors cursor-pointer"
+                      >
                         <td className="py-3.5 px-4">
                           <div className="font-bold text-slate-100">{item.symbol}</div>
                           <div className="text-[10px] text-slate-400 truncate max-w-[180px]">{item.company_name}</div>

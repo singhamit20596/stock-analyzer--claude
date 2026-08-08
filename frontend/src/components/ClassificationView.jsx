@@ -289,7 +289,7 @@ function AddStocksModal({ sectors, sections, onClose, onAdded }) {
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
-export default function ClassificationView() {
+export default function ClassificationView({ onSelectStock }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [savingKey, setSavingKey] = useState(null);
@@ -483,8 +483,15 @@ export default function ClassificationView() {
                 return (
                   <tr key={key} className="hover:bg-slate-800/30 transition-colors">
                     <td className="py-3 px-4">
+                      {/* The rest of the row is dropdowns, so only the ticker
+                          opens the deep dive. */}
                       <div className="font-bold text-slate-100 flex items-center gap-2">
-                        {row.symbol}
+                        <button
+                          onClick={() => onSelectStock && onSelectStock(row.symbol, row.country)}
+                          className="hover:text-indigo-400 transition-colors"
+                        >
+                          {row.symbol}
+                        </button>
                         {savedKey === key && <Check className="w-3.5 h-3.5 text-emerald-400" />}
                       </div>
                       <div className="text-[10px] text-slate-400 truncate max-w-[200px]">{row.company_name}</div>

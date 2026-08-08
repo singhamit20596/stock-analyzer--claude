@@ -114,6 +114,22 @@ TICKER_ALIASES = {
     "SBICARDSANDPAY": "SBICARD",
 }
 
+# Funds, not companies. They have no P/E, ROE, EPS or quarterly results, and
+# the providers do not say so: screener.in serves an ordinary company page with
+# every ratio blank rather than a 404, so the deep-dive page cannot detect a
+# fund from the response and has to be told here.
+ETF_SYMBOLS = {
+    # US
+    "VOO", "QQQM", "SOXX", "IGV",
+    # India
+    "ITBEES", "NIFTYIETF", "BANKBEES",
+}
+
+
+def is_etf(symbol: str) -> bool:
+    return resolve_quote_symbol(symbol) in ETF_SYMBOLS
+
+
 # Suffixes that carry no identifying information once we are matching names.
 _NOISE_WORDS = re.compile(
     r"\b(LTD|LIMITED|CORP|CORPORATION|INC|SERVICES|ETF|INDEX|REIT|CLASS|CLAS|A|B|A/S)\b"

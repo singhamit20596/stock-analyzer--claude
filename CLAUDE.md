@@ -1,8 +1,8 @@
 # Stocks Analyzer
 
 Personal multi-account stock portfolio tracker. Runs entirely on localhost — no
-deployment, no auth, single user. FastAPI serves both the API and the built
-React frontend from one origin.
+deployment. FastAPI serves both the API and the built React frontend from one
+origin. Multi-user since logins were added: see "Logins and ownership".
 
 **Run it:** `./start.command` (creates the venv, installs deps, rebuilds the
 frontend if sources changed, opens http://127.0.0.1:8080).
@@ -24,7 +24,10 @@ backend/
     taxonomy.py           the sector/section vocabulary
     chat_agent.py         the AI assistant (Claude Opus 5 + web search)
     ocr_engine.py         screenshot -> holdings (RapidOCR)
+    stock_detail.py       one instrument: candles, ratios, quarterly, technicals
+    position_engine.py    the user's own holding in one instrument
 frontend/src/components/  one file per tab
+frontend/src/components/stock/  the deep-dive page, one file per section
 ```
 
 ## Things that will bite you
@@ -36,8 +39,12 @@ inflates US P&L by ~95x. This was a real bug; don't reintroduce it.
 **Quotes are keyed by `(symbol, country)`, never symbol alone.** The same ticker
 can exist in both markets.
 
-**`portfolio.db` is committed to git**, so the repo contains real holdings. The
-GitHub repo (`singhamit20596/stock-analyzer--claude`) is public.
+**`portfolio.db` is NOT in git** — `.gitignore` covers `*.db` and the file has
+never been committed. The GitHub repo
+(`singhamit20596/stock-analyzer--claude`) is public, so keep it that way: the
+database now holds password hashes as well as real holdings. Point the app at a
+scratch copy with `STOCKS_DB_PATH=/tmp/whatever.db` rather than editing the
+real one to try something out.
 
 **Saving holdings deletes and re-inserts rows.** Anything user-owned —
 `sector`, `section`, `first_seen_at` — must be carried across by symbol in
@@ -52,9 +59,61 @@ outright if two builds overlap. Run one at a time; `pkill -f "vite build"` if a
 build appears stuck at 0% CPU (that's blocked I/O, not a compile error).
 
 **Yahoo Finance rate-limits this IP hard** (429 on every ticker). That's why
-history comes from Groww + Nasdaq + Frankfurter instead. Groww also emits a
-Sunday-stamped daily candle that isn't a real session — weekends are filtered
-out in `history_engine`.
+history comes from Groww + Nasdaq + Frankfurter instead.
+
+**Groww stamps a daily candle at 00:00 IST, which is 18:30 UTC the day
+before.** Read as UTC, every session lands a day early and Monday looks like
+Sunday. `stock_detail` converts in IST and gets a clean Mon–Fri series.
+`history_source` still reads UTC and `history_engine` then drops the
+"Sunday" candles — which are really Mondays, so the performance chart is
+silently missing one session a week. Not fixed here; it is a separate change
+to the portfolio history path.
+
+## Logins and ownership
+
+Username and password only — no email, no reset flow. **The first account to
+register becomes the admin** and claims every ownerless row, which is how the
+data that predates logins found an owner. Everyone after that is a normal user
+starting empty.
+
+- Passwords: PBKDF2-HMAC-SHA256, 600k iterations, per-user salt
+  (`services/auth_engine.py`). Not bcrypt/argon2 only because both are
+  compiled dependencies and this path makes installs painful.
+- Sessions: a random token, stored **hashed**, 30-day expiry, sent as
+  `Authorization: Bearer`.
+- `Account`, `Portfolio`, `TargetPortfolio` and `WatchStock` carry `user_id`.
+  Everything else hangs off those. **Never query these models directly** —
+  use the `_accounts_of` / `_portfolio_or_404` / `_holdings_of` helpers in
+  `main.py`, or a forgotten `.filter` becomes a data leak between users.
+- Admin "view as" sends `X-View-As: <user_id>`. The `viewer` dependency scopes
+  every query to that user and **rejects any non-GET**, so read-only is
+  enforced server-side rather than by hiding buttons. It also means the
+  assistant (a POST) is unavailable while viewing someone else.
+- Portfolio names, target names and watch symbols are unique **per user**.
+  Their tables were rebuilt for this — SQLite cannot drop a constraint, so
+  `migrations.py` recreates and copies them. That migration is idempotent and
+  keyed on whether the unique index already includes `user_id`.
+
+`migrations.py` runs after `create_all` on every start, because `create_all`
+adds missing tables but never alters existing ones.
+
+## Daily P&L
+
+`/api/portfolios/{id}/daily` returns the last 30 sessions, newest first, in its
+own section below the benchmark chart. Two sources feed it and rows say which:
+
+- **recorded** — `portfolio_daily_snapshots`, written by
+  `daily_engine.record_snapshot` every time a portfolio is priced. There is no
+  scheduler, so **a day is only on record if the app was opened that day**, and
+  the stored value is the last one seen. These rows carry cost basis, so they
+  are the only ones with a total P&L.
+- **reconstructed** — `history_engine`, valuing today's quantities at old
+  closes. Fills in before recording started; has no cost basis and cannot see
+  past buys and sells.
+
+Rows accumulate forever; only the window is trimmed. A change measured across
+the boundary between the two sources is flagged, because part of the move is
+the method changing rather than the market.
 
 ## Taxonomy (user-defined, not GICS)
 
@@ -83,17 +142,23 @@ block — **not** vector RAG. At this size full context is simpler and more
 accurate; retrieval only adds a way to miss the row that matters. Revisit if
 holdings grow past a few hundred.
 
-## Stock deep-dive — verified data sources (spike done 2026-08-06)
+## Stock deep-dive (built 2026-08-06)
 
-Planned feature: click a stock row -> full analysis page. **Do not use
-`yfinance`.** It is a Yahoo scraper and Yahoo hard-blocks this IP (429 on every
-endpoint, verified twice hours apart). Use these instead:
+Clicking a stock row anywhere opens `/api/stock/{symbol}/analysis`. The open
+stock lives in the query string (`?stock=&country=&portfolio=`) so Back closes
+the page; `/api/stock/{symbol}/candles?range=` serves range switches on their
+own so a pill click does not refetch the fundamentals.
+
+**Do not use `yfinance`.** It is a Yahoo scraper and Yahoo hard-blocks this IP
+(429 on every endpoint, verified twice hours apart). Use these instead:
 
 | Need | Source | Notes |
 |---|---|---|
 | US OHLCV | `api.nasdaq.com/api/quote/{sym}/historical` | already in `history_source.py` |
 | US ratios / sector / 52w / analyst target | `api.nasdaq.com/api/quote/{sym}/summary?assetclass=stocks` | `OneYrTarget` is the analyst price target |
 | US financials | `api.nasdaq.com/api/company/{sym}/financials?frequency=1` | income statement, balance sheet, cash flow, ratios |
+| US quarterly | same endpoint with `frequency=2` | only 4 quarters, so no year-ago column — the page reports QoQ and says so |
+| US company name | `api.nasdaq.com/api/quote/{sym}/info` | the summary endpoint has no name |
 | IND OHLCV | Groww charting v1 | already in `history_source.py`; returns `changePerc` free |
 | IND fundamentals | `screener.in/company/{SYMBOL}/` | HTML scrape — see parsing note below |
 | IND company info | `api.tickertape.in/stocks/info/{sid}` | `sid` from `api.tickertape.in/search?text={sym}&types=stock` |
@@ -104,7 +169,21 @@ Dead ends already tried: NSE official API (403), Groww `accord_points`
 **screener.in parsing:** ratios live in `<ul id="top-ratios">`, and the value
 span is `class="nowrap value"` — matching on `class="value"` finds nothing.
 Quarterly results are in `<section id="quarters">`. `High / Low` holds two
-numbers in one span; take both.
+numbers in one span; take both. Every number sits in its own
+`<span class="number">`, so reading those is what handles both cases.
+Row labels are written `Sales&nbsp;+` — **decode the entities before
+matching**, or the revenue and net-profit rows go missing while the others
+parse fine. Screener's top line is `Sales` for most companies and `Revenue`
+for lenders, whose operating line is `Financing Profit`, not `Operating
+Profit`.
+
+**Two unit traps.** Nasdaq's statements are in *thousands* while its market cap
+is absolute — divide them without scaling and P/E comes out 1000x too high.
+screener's market cap is in *crore*.
+
+**tickertape search is fuzzy.** `?text=MEDANTA` returns Vedanta Ltd with
+`match: "SIMILAR"`. Require an exact ticker match or the page shows another
+company's name and description.
 
 Design decisions from the plan review:
 - Lead the page with **the user's own position** (units, avg cost, P&L, % of
@@ -112,8 +191,11 @@ Design decisions from the plan review:
   stock site cannot show and the reason to open the page.
 - **No computed BUY/HOLD/SELL badge.** Show indicators as inputs and hand off to
   the assistant, which cites sources and carries the not-advice note.
-- ETFs (VOO, QQQM, SOXX, ITBEES, NIFTYIETF) have no P/E, ROE, EPS or quarterly
-  results — they need a separate variant, not empty ratio cards.
+- ETFs have no P/E, ROE, EPS or quarterly results — they get a "Fund facts"
+  variant, not empty ratio cards. The providers do not flag a fund:
+  screener.in serves an ordinary company page with every ratio blank, so the
+  list is hard-coded as `ETF_SYMBOLS` in `symbols.py` alongside the other
+  ticker maps.
 - 1D/5D need intraday data the daily endpoints do not serve; cap the range at
   5Y (Groww's window will not reach 10Y reliably).
 - Cache fundamentals 6-24h, as `history_source` does.
@@ -121,6 +203,8 @@ Design decisions from the plan review:
 ## Conventions
 
 - Comments explain *why*, not what. Don't narrate the code.
-- Frontend charts are hand-written SVG (`AllocationPie`, `PerformanceChart`) —
-  there is deliberately no charting dependency.
+- Portfolio-level charts are hand-written SVG (`AllocationPie`,
+  `PerformanceChart`). The one dependency is `lightweight-charts`, used only by
+  the deep-dive price chart, where candlesticks with a volume pane and a
+  crosshair are not worth hand-rolling.
 - `frontend/dist/` is committed so `start.command` works without npm.

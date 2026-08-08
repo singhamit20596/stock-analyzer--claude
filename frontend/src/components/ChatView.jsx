@@ -133,7 +133,7 @@ function Markdown({ text }) {
   return <div>{out}</div>;
 }
 
-export default function ChatView() {
+export default function ChatView({ initialPrompt = '', onPromptConsumed }) {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -144,6 +144,24 @@ export default function ChatView() {
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages, busy]);
+
+  // A question handed over from a stock page is filled in rather than sent, so
+  // it can be edited before it goes.
+  useEffect(() => {
+    if (!initialPrompt) return;
+    setInput(initialPrompt);
+    taRef.current?.focus();
+    onPromptConsumed?.();
+  }, [initialPrompt, onPromptConsumed]);
+
+  // The box starts one row tall, which would hide most of a handed-over
+  // question, so it grows to fit what is in it.
+  useEffect(() => {
+    const box = taRef.current;
+    if (!box) return;
+    box.style.height = 'auto';
+    box.style.height = `${Math.min(box.scrollHeight, 160)}px`;
+  }, [input]);
 
   const send = async (text) => {
     const question = (text ?? input).trim();

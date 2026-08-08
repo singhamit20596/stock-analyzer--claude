@@ -8,6 +8,9 @@ backend/venv/
 venv/
 *.db
 *.sqlite3
+# Pre-migration backups: "*.db" does not match "portfolio.db.backup-…", and
+# these hold real holdings and password hashes.
+*.db.backup-*
 
 # Node / React
 node_modules/

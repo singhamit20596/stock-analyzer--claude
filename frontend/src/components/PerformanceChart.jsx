@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { TrendingUp, TrendingDown, AlertCircle, Activity } from 'lucide-react';
+import { AlertCircle, Activity } from 'lucide-react';
 
 const RANGES = [
   { id: '1mo', label: '1M' },
@@ -65,7 +65,7 @@ export default function PerformanceChart({ portfolioId }) {
     </div>
   );
 
-  const { dates, series, sessions, coverage, warnings } = data;
+  const { dates, series, coverage, warnings } = data;
   const present = LINES.filter(l => series[l.key]?.indexed?.some(v => v != null));
 
   const all = present.flatMap(l => series[l.key].indexed).filter(v => v != null);
@@ -133,31 +133,7 @@ export default function PerformanceChart({ portfolioId }) {
         </div>
       </div>
 
-      {/* Last 3 sessions */}
-      {sessions?.length > 0 && (
-        <div className="px-5 pb-4 grid grid-cols-1 sm:grid-cols-3 gap-3">
-          {sessions.map(s => {
-            const up = s.change_inr >= 0;
-            return (
-              <div key={s.date} className="bg-slate-900/50 border border-slate-800 rounded-xl px-3 py-2.5">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                  {shortDate(s.date)}
-                </p>
-                <p className={`text-base font-bold flex items-center gap-1 ${up ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {up ? <TrendingUp className="w-3.5 h-3.5" /> : <TrendingDown className="w-3.5 h-3.5" />}
-                  {up ? '+' : ''}{fmtInr(s.change_inr)}
-                </p>
-                <p className="text-[10px] text-slate-500">
-                  <span className={up ? 'text-emerald-500' : 'text-rose-500'}>
-                    {up ? '+' : ''}{s.change_percent}%
-                  </span>
-                  {' · closed '}{fmtInr(s.value_inr)}
-                </p>
-              </div>
-            );
-          })}
-        </div>
-      )}
+      {/* Day-on-day moves live in their own section — see DailyChangeTable. */}
 
       {/* Chart */}
       <div className="px-2 pb-1">

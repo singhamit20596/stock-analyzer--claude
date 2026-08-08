@@ -1,5 +1,6 @@
 import React from 'react';
 import { LayoutDashboard, PieChart, Wallet, History, UserCheck, Tags , Sparkles } from 'lucide-react';
+import UserMenu from './UserMenu';
 
 export const NAV_ITEMS = [
   { id: 'chat', label: 'Assistant', icon: Sparkles },
@@ -11,7 +12,7 @@ export const NAV_ITEMS = [
   { id: 'logs', label: 'Sync Audit Logs', icon: History },
 ];
 
-export default function Navbar({ activeTab, setActiveTab }) {
+export default function Navbar({ activeTab, setActiveTab, user, viewAs, onViewAs, onLogout }) {
 
   return (
     <header className="sticky top-0 z-40 glass-panel border-b border-slate-800/80 mb-6">
@@ -33,6 +34,7 @@ export default function Navbar({ activeTab, setActiveTab }) {
         </div>
 
         {/* Navigation Tabs */}
+        <div className="flex items-center gap-3">
         <nav className="flex flex-wrap items-center gap-1 bg-slate-900/60 p-1.5 rounded-xl border border-slate-800">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -53,6 +55,11 @@ export default function Navbar({ activeTab, setActiveTab }) {
             );
           })}
         </nav>
+
+        {user && (
+          <UserMenu user={user} viewAs={viewAs} onViewAs={onViewAs} onLogout={onLogout} />
+        )}
+        </div>
       </div>
     </header>
   );

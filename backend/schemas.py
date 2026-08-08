@@ -4,6 +4,12 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel
 
 
+class CredentialsRequest(BaseModel):
+    """Used for both registering and signing in — the rules are the same."""
+    username: str
+    password: str
+
+
 class AccountBase(BaseModel):
     name: str
     currency_type: Optional[str] = "IND"   # "IND" (₹ INR) or "US" ($ USD)

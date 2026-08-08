@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import AllocationPie from './AllocationPie';
 import PerformanceChart from './PerformanceChart';
+import DailyChangeTable from './DailyChangeTable';
 
 // Current value summed per distinct value of `key`, for the pie charts.
 function groupBy(rows, key) {
@@ -283,6 +284,9 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
       {/* Performance over time */}
       <PerformanceChart portfolioId={portfolioId} />
 
+      {/* Day-by-day P&L, kept separate from the benchmark comparison */}
+      <DailyChangeTable portfolioId={portfolioId} />
+
       {/* Allocation breakdown */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <AllocationPie
@@ -377,7 +381,7 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
                 return (
                   <tr
                     key={`${row.symbol}-${row.currency}`}
-                    onClick={() => onSelectStock && onSelectStock(row.symbol, row.country)}
+                    onClick={() => onSelectStock && onSelectStock(row.symbol, row.country, portfolioId)}
                     className="hover:bg-slate-800/60 cursor-pointer transition-colors group"
                   >
                     <td className="py-3 px-3 sticky left-0 bg-slate-950/90 group-hover:bg-slate-900/90 transition-colors">

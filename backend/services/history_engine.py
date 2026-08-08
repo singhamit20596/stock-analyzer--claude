@@ -85,8 +85,7 @@ def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo") -> Dict[s
     # then forward-filled onto that spine so all four lines align.
     #
     # Weekends are dropped: Groww emits a Sunday-stamped candle that is not a
-    # real session, and letting it through both bends the chart and lets a
-    # non-trading day count as one of the "last 3 sessions".
+    # real session, and letting it through bends the chart.
     dates = [d for d in sorted({d for s in priced.values() for d in s})
              if date.fromisoformat(d).weekday() < 5]
     filled = {k: _forward_fill(s, dates) for k, s in priced.items()}
@@ -144,27 +143,13 @@ def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo") -> Dict[s
         warnings.append(f"{missing} of {len(quantities)} holdings had no price "
                         f"history and are excluded from the portfolio line.")
 
-    # Session-over-session moves, most recent first.
-    sessions: List[Dict[str, Any]] = []
-    for i in range(len(dates) - 1, 0, -1):
-        previous, current = portfolio[i - 1], portfolio[i]
-        if previous <= 0:
-            continue
-        change = current - previous
-        sessions.append({
-            "date": dates[i],
-            "value_inr": round(current, 2),
-            "change_inr": round(change, 2),
-            "change_percent": round(change / previous * 100, 2),
-        })
-        if len(sessions) == 3:
-            break
-
+    # Day-over-day moves are no longer derived here: they have their own
+    # section, fed by `daily_engine`, which prefers recorded values over this
+    # reconstruction and keeps a 30-day window rather than three sessions.
     return {
         "range": range_,
         "dates": dates,
         "series": series,
-        "sessions": sessions,
         "coverage": {"priced": len(priced), "total": len(quantities)},
         "warnings": warnings,
     }

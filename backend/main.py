@@ -3,24 +3,30 @@ import shutil
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import (Depends, FastAPI, File, Header, HTTPException, Query,
+                     Request, UploadFile)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session
 
+import migrations
 import models
 import schemas
 from database import engine, get_db
 from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
-from services import chat_agent, history_engine, target_engine, taxonomy
+from services import (auth_engine, chat_agent, daily_engine, history_engine,
+                      position_engine, stock_detail, target_engine, taxonomy)
 from services.quote_service import (fetch_live_prices_batch, fetch_sector,
                                    fetch_sectors_batch, fetch_usd_to_inr_rate)
 from services.symbols import guess_market, normalize_symbol
 
 models.Base.metadata.create_all(bind=engine)
+# create_all only adds missing tables, so a database from before logins existed
+# still needs its columns and unique constraints brought up to date.
+migrations.run(engine)
 
 SCREENSHOTS_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
@@ -49,6 +55,196 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ─────────────────────────────────────────────────────────────
+# AUTHENTICATION
+# ─────────────────────────────────────────────────────────────
+
+def _bearer(authorization: Optional[str]) -> Optional[str]:
+    if not authorization:
+        return None
+    scheme, _, token = authorization.partition(" ")
+    return token.strip() if scheme.lower() == "bearer" and token.strip() else None
+
+
+def current_user(authorization: Optional[str] = Header(None),
+                 db: Session = Depends(get_db)) -> models.User:
+    """The signed-in user, or 401."""
+    user = auth_engine.resolve_token(db, _bearer(authorization))
+    if user is None:
+        raise HTTPException(status_code=401, detail="Sign in to continue.")
+    return user
+
+
+class Viewer:
+    """Who is signed in, and whose data is being looked at.
+
+    They differ only when an admin is viewing another user. In that case the
+    session stays the admin's — so the audit trail and the write guard still
+    know who is really acting — while every query is scoped to `user`.
+    """
+
+    def __init__(self, account: models.User, target: models.User):
+        self.account = account          # who signed in
+        self.user = target              # whose data is in scope
+        self.impersonating = account.id != target.id
+
+    @property
+    def id(self) -> str:
+        return self.user.id
+
+    @property
+    def is_admin(self) -> bool:
+        return self.account.role == auth_engine.ADMIN_ROLE
+
+
+def viewer(request: Request,
+           x_view_as: Optional[str] = Header(None),
+           account: models.User = Depends(current_user),
+           db: Session = Depends(get_db)) -> Viewer:
+    """Resolves the admin's "view as" header into the user being inspected.
+
+    Non-admins are always themselves. An admin viewing someone else is held to
+    reads: the choice was to let the admin see everything, not to edit on
+    another person's behalf, and a stray click on a page rendered with someone
+    else's data would otherwise change their portfolio.
+    """
+    if not x_view_as or x_view_as == account.id:
+        return Viewer(account, account)
+
+    if account.role != auth_engine.ADMIN_ROLE:
+        raise HTTPException(status_code=403, detail="Only an admin can view other users.")
+
+    target = db.query(models.User).filter(models.User.id == x_view_as).first()
+    if target is None:
+        raise HTTPException(status_code=404, detail="No such user.")
+
+    if request.method not in ("GET", "HEAD", "OPTIONS"):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Viewing {target.username} is read-only. "
+                   f"Switch back to your own account to make changes.")
+
+    return Viewer(account, target)
+
+
+# ── ownership-scoped lookups ─────────────────────────────────
+# Every query for user-owned data goes through one of these. Filtering at each
+# call site instead would mean one forgotten `.filter` is a data leak between
+# users, and there are more than fifty such call sites.
+
+def _accounts_of(db: Session, view: Viewer) -> List[models.Account]:
+    return (db.query(models.Account)
+            .filter(models.Account.user_id == view.id).all())
+
+
+def _account_or_404(db: Session, view: Viewer, account_id: str) -> models.Account:
+    account = (db.query(models.Account)
+               .filter(models.Account.id == account_id,
+                       models.Account.user_id == view.id).first())
+    if account is None:
+        # Deliberately the same answer as a genuinely missing row: whether
+        # someone else owns this id is not this user's business.
+        raise HTTPException(status_code=404, detail="Account not found")
+    return account
+
+
+def _holdings_of(db: Session, view: Viewer) -> List[models.Holding]:
+    """Every holding in the viewer's own accounts."""
+    account_ids = [a.id for a in _accounts_of(db, view)]
+    if not account_ids:
+        return []
+    return (db.query(models.Holding)
+            .filter(models.Holding.account_id.in_(account_ids)).all())
+
+
+def _portfolio_or_404(db: Session, view: Viewer, portfolio_id: str) -> models.Portfolio:
+    portfolio = (db.query(models.Portfolio)
+                 .filter(models.Portfolio.id == portfolio_id,
+                         models.Portfolio.user_id == view.id).first())
+    if portfolio is None:
+        raise HTTPException(status_code=404, detail="Portfolio not found")
+    return portfolio
+
+
+def _target_or_404(db: Session, view: Viewer, target_id: str) -> models.TargetPortfolio:
+    target = (db.query(models.TargetPortfolio)
+              .filter(models.TargetPortfolio.id == target_id,
+                      models.TargetPortfolio.user_id == view.id).first())
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    return target
+
+
+def _watch_of(db: Session, view: Viewer) -> List[models.WatchStock]:
+    return (db.query(models.WatchStock)
+            .filter(models.WatchStock.user_id == view.id).all())
+
+
+@app.get("/api/auth/status")
+def auth_status(db: Session = Depends(get_db)):
+    """Whether anyone has registered yet, so the UI knows to offer the first
+    account — which is the one that becomes admin."""
+    return {"has_users": auth_engine.user_count(db) > 0}
+
+
+@app.post("/api/auth/register")
+def register(payload: schemas.CredentialsRequest, db: Session = Depends(get_db)):
+    problem = auth_engine.validate_credentials(payload.username, payload.password)
+    if problem:
+        raise HTTPException(status_code=400, detail=problem)
+    if auth_engine.find_user(db, payload.username):
+        raise HTTPException(status_code=409, detail="That username is taken.")
+
+    first = auth_engine.user_count(db) == 0
+    user = auth_engine.create_user(db, payload.username, payload.password)
+    claimed = auth_engine.claim_unowned_data(db, user) if first else {}
+
+    token, expires = auth_engine.issue_token(db, user)
+    return {
+        "token": token,
+        "expires_at": expires,
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+        "claimed": claimed,
+    }
+
+
+@app.post("/api/auth/login")
+def login(payload: schemas.CredentialsRequest, db: Session = Depends(get_db)):
+    user = auth_engine.authenticate(db, payload.username, payload.password)
+    if user is None:
+        # Same message either way, so this cannot be used to discover usernames.
+        raise HTTPException(status_code=401, detail="Incorrect username or password.")
+    token, expires = auth_engine.issue_token(db, user)
+    return {
+        "token": token,
+        "expires_at": expires,
+        "user": {"id": user.id, "username": user.username, "role": user.role},
+    }
+
+
+@app.post("/api/auth/logout")
+def logout(authorization: Optional[str] = Header(None), db: Session = Depends(get_db)):
+    auth_engine.revoke_token(db, _bearer(authorization))
+    return {"message": "Signed out."}
+
+
+@app.get("/api/auth/me")
+def whoami(account: models.User = Depends(current_user), db: Session = Depends(get_db)):
+    """The signed-in user, plus the list of users an admin may view."""
+    others = []
+    if account.role == auth_engine.ADMIN_ROLE:
+        others = [
+            {"id": u.id, "username": u.username, "role": u.role}
+            for u in db.query(models.User).order_by(models.User.created_at).all()
+        ]
+    return {
+        "id": account.id,
+        "username": account.username,
+        "role": account.role,
+        "users": others,
+    }
+
+
 def _price_quotes(accounts: List[models.Account],
                   holdings: List[models.Holding]) -> Tuple[Dict[Tuple[str, str], float], float]:
     """Fetches live quotes for every holding, plus the current USD->INR rate.
@@ -70,13 +266,15 @@ def _price_quotes(accounts: List[models.Account],
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/api/accounts", response_model=List[schemas.AccountResponse])
-def get_accounts(db: Session = Depends(get_db)):
-    return db.query(models.Account).all()
+def get_accounts(db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    return _accounts_of(db, view)
 
 
 @app.post("/api/accounts", response_model=schemas.AccountResponse)
-def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)):
+def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db),
+                   view: Viewer = Depends(viewer)):
     new_acc = models.Account(
+        user_id=view.id,
         name=account.name,
         currency_type=account.currency_type or "IND",
         wallet_balance=account.wallet_balance or 0.0,
@@ -88,10 +286,9 @@ def create_account(account: schemas.AccountCreate, db: Session = Depends(get_db)
 
 
 @app.put("/api/accounts/{account_id}", response_model=schemas.AccountResponse)
-def update_account(account_id: str, update_data: schemas.AccountUpdate, db: Session = Depends(get_db)):
-    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
+def update_account(account_id: str, update_data: schemas.AccountUpdate,
+                   db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    acc = _account_or_404(db, view, account_id)
 
     if update_data.name is not None:
         acc.name = update_data.name
@@ -106,10 +303,9 @@ def update_account(account_id: str, update_data: schemas.AccountUpdate, db: Sess
 
 
 @app.delete("/api/accounts/{account_id}")
-def delete_account(account_id: str, db: Session = Depends(get_db)):
-    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
+def delete_account(account_id: str, db: Session = Depends(get_db),
+                   view: Viewer = Depends(viewer)):
+    acc = _account_or_404(db, view, account_id)
 
     db.query(models.SyncLog).filter(models.SyncLog.account_id == account_id).delete()
     # Holdings and portfolio links cascade off the ORM delete.
@@ -181,22 +377,22 @@ def _resolve_sectors(db: Session, holdings: List[models.Holding]) -> Dict[Tuple[
 
 
 @app.get("/api/accounts/{account_id}/screenshot")
-def get_account_screenshot(account_id: str, db: Session = Depends(get_db)):
-    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
-    if not acc or not acc.latest_screenshot_path or not os.path.exists(acc.latest_screenshot_path):
+def get_account_screenshot(account_id: str, db: Session = Depends(get_db),
+                           view: Viewer = Depends(viewer)):
+    acc = _account_or_404(db, view, account_id)
+    if not acc.latest_screenshot_path or not os.path.exists(acc.latest_screenshot_path):
         raise HTTPException(status_code=404, detail="No screenshot found for this account")
     return FileResponse(acc.latest_screenshot_path, media_type="image/png")
 
 
 @app.get("/api/accounts/{account_id}/detail")
-def get_account_detail(account_id: str, db: Session = Depends(get_db)):
+def get_account_detail(account_id: str, db: Session = Depends(get_db),
+                       view: Viewer = Depends(viewer)):
     """Single-account view, reported in the account's own currency.
 
     US accounts additionally carry `_inr` fields so the UI can show both.
     """
-    acc = db.query(models.Account).filter(models.Account.id == account_id).first()
-    if not acc:
-        raise HTTPException(status_code=404, detail="Account not found")
+    acc = _account_or_404(db, view, account_id)
 
     holdings = db.query(models.Holding).filter(models.Holding.account_id == account_id).all()
     live_prices, usd_inr_rate = _price_quotes([acc], holdings)
@@ -288,6 +484,7 @@ async def upload_ocr_images(
     files: List[UploadFile] = File(...),
     account_id: Optional[str] = Query(None),
     db: Session = Depends(get_db),
+    view: Viewer = Depends(viewer),
 ):
     if not files:
         raise HTTPException(status_code=400, detail="No screenshot files provided")
@@ -303,7 +500,7 @@ async def upload_ocr_images(
         parsed_holdings.extend(PortfolioOCREngine.process_image(contents))
 
     if account_id and last_screenshot:
-        acc = db.query(models.Account).filter(models.Account.id == account_id).first()
+        acc = _account_or_404(db, view, account_id)
         if acc:
             acc_dir = os.path.join(SCREENSHOTS_DIR, account_id)
             os.makedirs(acc_dir, exist_ok=True)
@@ -332,10 +529,9 @@ def verify_and_save_holdings(
     request: schemas.VerifySaveRequest,
     strategy: str = Query("MERGE"),
     db: Session = Depends(get_db),
+    view: Viewer = Depends(viewer),
 ):
-    account = db.query(models.Account).filter(models.Account.id == request.account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Target account not found")
+    account = _account_or_404(db, view, request.account_id)
 
     is_us = account.currency_type == "US"
     country = "US" if is_us else "IND"
@@ -402,9 +598,11 @@ def verify_and_save_holdings(
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/api/portfolios")
-def list_portfolios(db: Session = Depends(get_db)):
+def list_portfolios(db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
     result = []
-    for p in db.query(models.Portfolio).all():
+    owned = (db.query(models.Portfolio)
+             .filter(models.Portfolio.user_id == view.id).all())
+    for p in owned:
         accounts = [link.account for link in p.account_links if link.account]
         result.append({
             "id": p.id,
@@ -417,56 +615,66 @@ def list_portfolios(db: Session = Depends(get_db)):
     return result
 
 
-def _replace_portfolio_accounts(db: Session, portfolio_id: str, account_ids: List[str]) -> None:
+def _replace_portfolio_accounts(db: Session, view: Viewer, portfolio_id: str,
+                                account_ids: List[str]) -> None:
     db.query(models.PortfolioAccount).filter(
         models.PortfolioAccount.portfolio_id == portfolio_id
     ).delete()
+    # Only the viewer's own accounts can be linked, so a guessed id from
+    # someone else's account cannot be pulled into this portfolio.
     known = {
-        a.id for a in db.query(models.Account).filter(models.Account.id.in_(account_ids)).all()
+        a.id for a in db.query(models.Account)
+        .filter(models.Account.id.in_(account_ids),
+                models.Account.user_id == view.id).all()
     }
     for acc_id in dict.fromkeys(account_ids):  # de-duplicate, keep order
         if acc_id in known:
             db.add(models.PortfolioAccount(portfolio_id=portfolio_id, account_id=acc_id))
 
 
+def _portfolio_name_clash(db: Session, view: Viewer, name: str,
+                          exclude_id: Optional[str] = None) -> bool:
+    query = db.query(models.Portfolio).filter(models.Portfolio.name == name,
+                                              models.Portfolio.user_id == view.id)
+    if exclude_id:
+        query = query.filter(models.Portfolio.id != exclude_id)
+    return query.first() is not None
+
+
 @app.post("/api/portfolios")
-def create_portfolio(payload: schemas.PortfolioCreate, db: Session = Depends(get_db)):
-    if db.query(models.Portfolio).filter(models.Portfolio.name == payload.name).first():
+def create_portfolio(payload: schemas.PortfolioCreate, db: Session = Depends(get_db),
+                     view: Viewer = Depends(viewer)):
+    if _portfolio_name_clash(db, view, payload.name):
         raise HTTPException(status_code=400, detail=f"Portfolio '{payload.name}' already exists")
 
-    portfolio = models.Portfolio(name=payload.name)
+    portfolio = models.Portfolio(name=payload.name, user_id=view.id)
     db.add(portfolio)
     db.flush()
-    _replace_portfolio_accounts(db, portfolio.id, payload.account_ids)
+    _replace_portfolio_accounts(db, view, portfolio.id, payload.account_ids)
     db.commit()
     db.refresh(portfolio)
     return {"id": portfolio.id, "name": portfolio.name, "created_at": portfolio.created_at}
 
 
 @app.put("/api/portfolios/{portfolio_id}")
-def update_portfolio(portfolio_id: str, payload: schemas.PortfolioCreate, db: Session = Depends(get_db)):
-    portfolio = db.query(models.Portfolio).filter(models.Portfolio.id == portfolio_id).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+def update_portfolio(portfolio_id: str, payload: schemas.PortfolioCreate,
+                     db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
 
-    clash = db.query(models.Portfolio).filter(
-        models.Portfolio.name == payload.name, models.Portfolio.id != portfolio_id
-    ).first()
-    if clash:
+    if _portfolio_name_clash(db, view, payload.name, exclude_id=portfolio_id):
         raise HTTPException(status_code=400, detail=f"Portfolio '{payload.name}' already exists")
 
     portfolio.name = payload.name
-    _replace_portfolio_accounts(db, portfolio_id, payload.account_ids)
+    _replace_portfolio_accounts(db, view, portfolio_id, payload.account_ids)
     db.commit()
     db.refresh(portfolio)
     return {"id": portfolio.id, "name": portfolio.name}
 
 
 @app.delete("/api/portfolios/{portfolio_id}")
-def delete_portfolio(portfolio_id: str, db: Session = Depends(get_db)):
-    portfolio = db.query(models.Portfolio).filter(models.Portfolio.id == portfolio_id).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+def delete_portfolio(portfolio_id: str, db: Session = Depends(get_db),
+                     view: Viewer = Depends(viewer)):
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
     db.delete(portfolio)
     db.commit()
     return {"message": "Portfolio deleted"}
@@ -481,11 +689,10 @@ def _split(a: float, b: float) -> str:
 
 
 @app.get("/api/portfolios/{portfolio_id}/detail")
-def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
+def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db),
+                         view: Viewer = Depends(viewer)):
     """Cross-account view of one named portfolio. Every value is in INR."""
-    portfolio = db.query(models.Portfolio).filter(models.Portfolio.id == portfolio_id).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
 
     accounts = [link.account for link in portfolio.account_links if link.account]
     account_ids = [a.id for a in accounts]
@@ -553,6 +760,14 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
         if b <= 0:
             return "—" if a <= 0 else "100% : 0%"
         return f"{a / b:.2f} : 1"
+
+    # Viewing a portfolio is what builds its daily record: the values are
+    # already priced here, and there is no background job to do it otherwise.
+    # An admin looking at someone else's portfolio does not write to it —
+    # read-only has to mean read-only, or the record shows days its owner was
+    # never here.
+    if not view.impersonating:
+        daily_engine.record_snapshot(db, portfolio_id, invested, current)
 
     invested_to_cash_ratio = ratio(invested, total_wallet_inr)
 
@@ -626,12 +841,12 @@ def get_portfolio_detail(portfolio_id: str, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────
 
 @app.get("/api/classification")
-def get_classification(db: Session = Depends(get_db)):
+def get_classification(db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
     """One row per distinct symbol: held positions plus watch-list stocks."""
-    holdings = db.query(models.Holding).all()
+    holdings = _holdings_of(db, view)
     classified = _resolve_sectors(db, holdings)
 
-    accounts = {a.id: a.name for a in db.query(models.Account).all()}
+    accounts = {a.id: a.name for a in _accounts_of(db, view)}
 
     by_symbol: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for h in holdings:
@@ -658,7 +873,7 @@ def get_classification(db: Session = Depends(get_db)):
 
     # Watch-list entries only surface when nothing is actually held under that
     # symbol — once bought, the real holding is the source of truth.
-    for w in db.query(models.WatchStock).all():
+    for w in _watch_of(db, view):
         key = (w.symbol.strip().upper(), w.country or "IND")
         if key in by_symbol:
             continue
@@ -690,6 +905,7 @@ def update_classification(
     symbol: str,
     payload: schemas.ClassificationUpdate,
     db: Session = Depends(get_db),
+    view: Viewer = Depends(viewer),
 ):
     """Set sector/section for a symbol across every account that holds it."""
     if payload.sector is not None and payload.sector not in taxonomy.SECTORS:
@@ -698,10 +914,12 @@ def update_classification(
         raise HTTPException(status_code=400, detail=f"Unknown section: {payload.section}")
 
     sym = symbol.strip().upper()
-    query = db.query(models.Holding).filter(models.Holding.symbol == sym)
+    account_ids = [a.id for a in _accounts_of(db, view)]
+    query = db.query(models.Holding).filter(models.Holding.symbol == sym,
+                                            models.Holding.account_id.in_(account_ids))
     if payload.country:
         query = query.filter(models.Holding.country == payload.country)
-    holdings = query.all()
+    holdings = query.all() if account_ids else []
 
     if holdings:
         for h in holdings:
@@ -713,7 +931,8 @@ def update_classification(
         return {"symbol": sym, "updated": len(holdings),
                 "sector": holdings[0].sector, "section": holdings[0].section}
 
-    watch_q = db.query(models.WatchStock).filter(models.WatchStock.symbol == sym)
+    watch_q = db.query(models.WatchStock).filter(models.WatchStock.symbol == sym,
+                                                 models.WatchStock.user_id == view.id)
     if payload.country:
         watch_q = watch_q.filter(models.WatchStock.country == payload.country)
     watch = watch_q.first()
@@ -747,7 +966,8 @@ def _propose(symbol: str, company_name: str = "", country: str = "") -> Dict[str
 
 @app.post("/api/classification/resolve")
 def resolve_classification(payload: schemas.ResolveStocksRequest,
-                           db: Session = Depends(get_db)):
+                           db: Session = Depends(get_db),
+                           view: Viewer = Depends(viewer)):
     """Classify typed stock names. Returns proposals for the user to confirm."""
     names = [n.strip() for n in (payload.names or []) if n and n.strip()]
     if not names:
@@ -755,10 +975,10 @@ def resolve_classification(payload: schemas.ResolveStocksRequest,
 
     existing = {
         (h.symbol.strip().upper(), h.country or "IND")
-        for h in db.query(models.Holding).all()
+        for h in _holdings_of(db, view)
     } | {
         (w.symbol.strip().upper(), w.country or "IND")
-        for w in db.query(models.WatchStock).all()
+        for w in _watch_of(db, view)
     }
 
     proposals = []
@@ -777,7 +997,8 @@ def resolve_classification(payload: schemas.ResolveStocksRequest,
 
 @app.post("/api/classification/resolve-image")
 async def resolve_classification_image(files: List[UploadFile] = File(...),
-                                       db: Session = Depends(get_db)):
+                                       db: Session = Depends(get_db),
+                                       view: Viewer = Depends(viewer)):
     """Same as /resolve, but reads the stock names off a screenshot."""
     if not files:
         raise HTTPException(status_code=400, detail="No screenshot files provided")
@@ -792,10 +1013,10 @@ async def resolve_classification_image(files: List[UploadFile] = File(...),
 
     existing = {
         (h.symbol.strip().upper(), h.country or "IND")
-        for h in db.query(models.Holding).all()
+        for h in _holdings_of(db, view)
     } | {
         (w.symbol.strip().upper(), w.country or "IND")
-        for w in db.query(models.WatchStock).all()
+        for w in _watch_of(db, view)
     }
 
     proposals = []
@@ -813,8 +1034,10 @@ async def resolve_classification_image(files: List[UploadFile] = File(...),
 
 
 @app.post("/api/classification/stocks")
-def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(get_db)):
+def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(get_db),
+                     view: Viewer = Depends(viewer)):
     """Commit confirmed proposals to the watch list."""
+    account_ids = [a.id for a in _accounts_of(db, view)]
     added, skipped = [], []
     for item in payload.stocks:
         sym = item.symbol.strip().upper()
@@ -829,14 +1052,16 @@ def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(ge
             raise HTTPException(status_code=400, detail=f"Unknown section: {item.section}")
 
         held = db.query(models.Holding).filter(
-            models.Holding.symbol == sym, models.Holding.country == country
-        ).first()
+            models.Holding.symbol == sym, models.Holding.country == country,
+            models.Holding.account_id.in_(account_ids)
+        ).first() if account_ids else None
         if held:
             skipped.append(sym)
             continue
 
         watch = db.query(models.WatchStock).filter(
-            models.WatchStock.symbol == sym, models.WatchStock.country == country
+            models.WatchStock.symbol == sym, models.WatchStock.country == country,
+            models.WatchStock.user_id == view.id
         ).first()
         if watch:
             watch.company_name = item.company_name or watch.company_name
@@ -844,6 +1069,7 @@ def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(ge
             watch.section = item.section or watch.section
         else:
             db.add(models.WatchStock(
+                user_id=view.id,
                 symbol=sym,
                 company_name=item.company_name or sym,
                 country=country,
@@ -856,11 +1082,13 @@ def add_watch_stocks(payload: schemas.AddStocksRequest, db: Session = Depends(ge
 
 
 @app.delete("/api/classification/stocks/{symbol}")
-def delete_watch_stock(symbol: str, country: str = "IND", db: Session = Depends(get_db)):
+def delete_watch_stock(symbol: str, country: str = "IND", db: Session = Depends(get_db),
+                       view: Viewer = Depends(viewer)):
     """Removes a watch-list entry. Held positions are never touched."""
     watch = db.query(models.WatchStock).filter(
         models.WatchStock.symbol == symbol.strip().upper(),
         models.WatchStock.country == country.upper(),
+        models.WatchStock.user_id == view.id,
     ).first()
     if not watch:
         raise HTTPException(status_code=404, detail="Watch-list entry not found")
@@ -871,27 +1099,30 @@ def delete_watch_stock(symbol: str, country: str = "IND", db: Session = Depends(
 
 @app.get("/api/portfolios/{portfolio_id}/history")
 def get_portfolio_history(portfolio_id: str, range: str = "3mo",
-                          db: Session = Depends(get_db)):
+                          db: Session = Depends(get_db),
+                          view: Viewer = Depends(viewer)):
     """Portfolio value over time against Nifty 50, Nasdaq and the S&P 500.
 
     Reconstructed from current quantities priced at each day's close — see
     history_engine for what that does and does not represent.
     """
-    portfolio = db.query(models.Portfolio).filter(
-        models.Portfolio.id == portfolio_id
-    ).first()
-    if not portfolio:
-        raise HTTPException(status_code=404, detail="Portfolio not found")
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
+    result = history_engine.build_history(_holding_rows_for_history(db, portfolio), range)
+    result["portfolio_id"] = portfolio_id
+    result["portfolio_name"] = portfolio.name
+    return result
 
+
+def _holding_rows_for_history(db: Session, portfolio) -> List[Dict[str, Any]]:
+    """Quantities per (symbol, market), in the shape `history_engine` wants."""
     accounts = [link.account for link in portfolio.account_links if link.account]
-    account_ids = [a.id for a in accounts]
+    account_map = {a.id: a for a in accounts}
+    account_ids = list(account_map)
     holdings = (
         db.query(models.Holding).filter(models.Holding.account_id.in_(account_ids)).all()
         if account_ids else []
     )
-    account_map = {a.id: a for a in accounts}
-
-    rows = [
+    return [
         {
             "symbol": h.symbol,
             "quantity": h.quantity,
@@ -900,24 +1131,46 @@ def get_portfolio_history(portfolio_id: str, range: str = "3mo",
         for h in holdings
     ]
 
-    result = history_engine.build_history(rows, range)
-    result["portfolio_id"] = portfolio_id
+
+@app.get("/api/portfolios/{portfolio_id}/daily")
+def get_portfolio_daily(portfolio_id: str,
+                        limit: int = Query(daily_engine.DISPLAY_DAYS, ge=1, le=365),
+                        db: Session = Depends(get_db),
+                        view: Viewer = Depends(viewer)):
+    """Day-by-day value, P&L and percentage move, newest first.
+
+    Days the app recorded live are used as-is; earlier days are reconstructed
+    from price history so the section is populated before recording has had
+    time to accumulate. Every row says which it is.
+    """
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
+
+    # 3 months of sessions so a 30-row window is full even though weekends and
+    # holidays do not produce rows.
+    history = history_engine.build_history(_holding_rows_for_history(db, portfolio), "3mo")
+
+    result = daily_engine.build_daily(db, portfolio_id, history, limit)
     result["portfolio_name"] = portfolio.name
     return result
 
 
 @app.post("/api/chat")
-def chat(payload: schemas.ChatRequest, db: Session = Depends(get_db)):
+def chat(payload: schemas.ChatRequest, db: Session = Depends(get_db),
+         view: Viewer = Depends(viewer)):
     """Ask the portfolio assistant a question.
 
     Assembles the full portfolio into the prompt (see chat_agent for why that
     beats retrieval at this size) and lets the model search the web itself.
+
+    Only the viewer's own holdings are assembled — the prompt is the one place
+    where another user's positions would leak in full rather than a row at a
+    time.
     """
     if not payload.messages:
         raise HTTPException(status_code=400, detail="No messages provided")
 
-    accounts = db.query(models.Account).all()
-    holdings = db.query(models.Holding).all()
+    accounts = _accounts_of(db, view)
+    holdings = _holdings_of(db, view)
     classified = _resolve_sectors(db, holdings)
 
     live_prices, usd_inr_rate = _price_quotes(accounts, holdings)
@@ -1069,8 +1322,10 @@ def _apply_rules(db: Session, target: models.TargetPortfolio,
 
 
 @app.get("/api/targets")
-def list_targets(db: Session = Depends(get_db)):
-    targets = db.query(models.TargetPortfolio).order_by(models.TargetPortfolio.name).all()
+def list_targets(db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    targets = (db.query(models.TargetPortfolio)
+               .filter(models.TargetPortfolio.user_id == view.id)
+               .order_by(models.TargetPortfolio.name).all())
     return {
         "sectors": taxonomy.SECTORS,
         "sections": taxonomy.SECTIONS,
@@ -1079,14 +1334,18 @@ def list_targets(db: Session = Depends(get_db)):
 
 
 @app.post("/api/targets")
-def create_target(payload: schemas.TargetPortfolioCreate, db: Session = Depends(get_db)):
+def create_target(payload: schemas.TargetPortfolioCreate, db: Session = Depends(get_db),
+                  view: Viewer = Depends(viewer)):
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Target name is required")
-    if db.query(models.TargetPortfolio).filter(models.TargetPortfolio.name == name).first():
+    if db.query(models.TargetPortfolio).filter(
+            models.TargetPortfolio.name == name,
+            models.TargetPortfolio.user_id == view.id).first():
         raise HTTPException(status_code=400, detail=f"A target named '{name}' already exists")
 
     target = models.TargetPortfolio(
+        user_id=view.id,
         name=name,
         ind_percent=payload.ind_percent,
         ind_cash_percent=payload.ind_cash_percent,
@@ -1102,12 +1361,8 @@ def create_target(payload: schemas.TargetPortfolioCreate, db: Session = Depends(
 
 @app.put("/api/targets/{target_id}")
 def update_target(target_id: str, payload: schemas.TargetPortfolioCreate,
-                  db: Session = Depends(get_db)):
-    target = db.query(models.TargetPortfolio).filter(
-        models.TargetPortfolio.id == target_id
-    ).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="Target not found")
+                  db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    target = _target_or_404(db, view, target_id)
 
     target.name = payload.name.strip() or target.name
     target.ind_percent = payload.ind_percent
@@ -1120,27 +1375,21 @@ def update_target(target_id: str, payload: schemas.TargetPortfolioCreate,
 
 
 @app.delete("/api/targets/{target_id}")
-def delete_target(target_id: str, db: Session = Depends(get_db)):
-    target = db.query(models.TargetPortfolio).filter(
-        models.TargetPortfolio.id == target_id
-    ).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="Target not found")
+def delete_target(target_id: str, db: Session = Depends(get_db),
+                  view: Viewer = Depends(viewer)):
+    target = _target_or_404(db, view, target_id)
     db.delete(target)
     db.commit()
     return {"message": "Target deleted"}
 
 
 @app.get("/api/targets/{target_id}/compare")
-def compare_target(target_id: str, portfolio_id: str, db: Session = Depends(get_db)):
+def compare_target(target_id: str, portfolio_id: str, db: Session = Depends(get_db),
+                   view: Viewer = Depends(viewer)):
     """Bucket-level diff between a target's shape and a real portfolio."""
-    target = db.query(models.TargetPortfolio).filter(
-        models.TargetPortfolio.id == target_id
-    ).first()
-    if not target:
-        raise HTTPException(status_code=404, detail="Target not found")
+    target = _target_or_404(db, view, target_id)
 
-    detail = get_portfolio_detail(portfolio_id, db)
+    detail = get_portfolio_detail(portfolio_id, db, view)
     accounts = db.query(models.Account).filter(
         models.Account.id.in_([a["id"] for a in detail["accounts"]])
     ).all() if detail["accounts"] else []
@@ -1160,14 +1409,17 @@ def compare_target(target_id: str, portfolio_id: str, db: Session = Depends(get_
 
 
 @app.get("/api/sync-logs")
-def get_sync_logs(db: Session = Depends(get_db)):
+def get_sync_logs(db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    names = {a.id: a.name for a in _accounts_of(db, view)}
+    if not names:
+        return []
     logs = (
         db.query(models.SyncLog)
+        .filter(models.SyncLog.account_id.in_(list(names)))
         .order_by(models.SyncLog.synced_at.desc())
         .limit(50)
         .all()
     )
-    names = {a.id: a.name for a in db.query(models.Account).all()}
     return [
         {
             "id": log.id,
@@ -1185,19 +1437,115 @@ def get_sync_logs(db: Session = Depends(get_db)):
 # STOCK DEEP-DIVE ANALYSIS
 # ─────────────────────────────────────────────────────────────
 
+def _scope_accounts(db: Session, view: Viewer,
+                    portfolio_id: Optional[str]) -> List[models.Account]:
+    """The accounts a position is measured against.
+
+    Without a portfolio the scope is every account the viewer owns, so the page
+    still works when it is opened from a view that has no portfolio context.
+    """
+    if portfolio_id:
+        portfolio = _portfolio_or_404(db, view, portfolio_id)
+        return [link.account for link in portfolio.account_links if link.account]
+    return _accounts_of(db, view)
+
+
+def _pick_target(db: Session, view: Viewer, target_id: Optional[str]):
+    """The named target, or the only one there is.
+
+    Falling back to a single target keeps target tracking working without the
+    caller having to know about targets; with several defined, guessing which
+    one the user means would be wrong, so tracking is simply omitted.
+    """
+    owned = db.query(models.TargetPortfolio).filter(
+        models.TargetPortfolio.user_id == view.id)
+    if target_id:
+        return owned.filter(models.TargetPortfolio.id == target_id).first()
+    targets = owned.all()
+    return targets[0] if len(targets) == 1 else None
+
+
+def _position_context(db: Session, view: Viewer, symbol: str, country: str,
+                      portfolio_id: Optional[str], target_id: Optional[str]) -> Dict[str, Any]:
+    """The user's holding in this stock, plus how it tracks against target."""
+    accounts = _scope_accounts(db, view, portfolio_id)
+    account_ids = [a.id for a in accounts]
+    holdings = (db.query(models.Holding)
+                .filter(models.Holding.account_id.in_(account_ids)).all()
+                if account_ids else [])
+
+    live_prices, usd_inr_rate = _price_quotes(accounts, holdings)
+    aggregated = PortfolioAggregator.aggregate_holdings(
+        accounts, holdings, live_prices, usd_inr_rate)
+    sectors = _resolve_sectors(db, holdings)
+
+    key = (symbol.strip().upper(), country.strip().upper())
+    position = position_engine.build(
+        symbol, country, aggregated, sectors.get(key, {}), holdings, usd_inr_rate)
+
+    target = _pick_target(db, view, target_id)
+    tracking = None
+    if target and position.get("held"):
+        rows = [{
+            "symbol": item["symbol"],
+            "company_name": item["company_name"],
+            "country": item["country"],
+            "current_value_inr": item["current_value_inr"],
+            **sectors.get((item["symbol"], item["country"]), {}),
+        } for item in aggregated["items"]]
+
+        wallet_by_market = {"IND": 0.0, "US": 0.0}
+        for account in accounts:
+            is_us = account.currency_type == "US"
+            wallet_by_market["US" if is_us else "IND"] += (
+                (account.wallet_balance or 0.0) * (usd_inr_rate if is_us else 1.0))
+
+        tracking = position_engine.locate_in_target(
+            target_engine.compare(target, rows, wallet_by_market), symbol, country)
+
+    return {"position": position, "target_tracking": tracking}
+
+
 @app.get("/api/stock/{symbol}/analysis")
-def get_stock_analysis(
+def get_stock_deep_dive(
     symbol: str,
     country: str = Query("IND"),
-    chart_period: str = Query("1Y"),
+    portfolio_id: Optional[str] = Query(None),
+    target_id: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    view: Viewer = Depends(viewer),
 ):
-    """Full stock analysis: company info, chart, technicals, ratios,
-    quarterly results, insights, and buy/hold/sell recommendation."""
-    from services.stock_analysis import get_stock_analysis as _analyze
+    """Everything the deep-dive page shows: the user's position first, then
+    price history, ratios, quarterly results and technical indicators.
+
+    No verdict is computed anywhere — indicators are inputs, and the page hands
+    off to the assistant for interpretation.
+    """
     try:
-        return _analyze(symbol, country, chart_period)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Analysis failed: {str(e)}")
+        detail = stock_detail.get_stock_detail(symbol, country)
+    except Exception as exc:
+        raise HTTPException(status_code=502,
+                            detail=f"Market data lookup failed: {exc}")
+
+    detail.update(_position_context(db, view, symbol, country, portfolio_id, target_id))
+    return detail
+
+
+@app.get("/api/stock/{symbol}/candles")
+def get_stock_candles(
+    symbol: str,
+    country: str = Query("IND"),
+    range_key: str = Query(stock_detail.DEFAULT_RANGE, alias="range"),
+    view: Viewer = Depends(viewer),
+):
+    """One range of the price series. Separate from the analysis endpoint so
+    switching a range pill does not refetch the fundamentals."""
+    if range_key.upper() not in stock_detail.RANGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported range. Use one of: {', '.join(stock_detail.RANGES)}")
+    candles = stock_detail.fetch_candles(symbol, country)
+    return stock_detail.slice_range(candles, range_key.upper())
 
 
 # ─────────────────────────────────────────────────────────────
