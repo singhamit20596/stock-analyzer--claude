@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { CalendarRange, TrendingUp, TrendingDown, AlertCircle, Circle } from 'lucide-react';
+import { CalendarRange, TrendingUp, TrendingDown, AlertCircle } from 'lucide-react';
 
 const DASH = '—';
 
@@ -55,7 +55,6 @@ export default function DailyChangeTable({ portfolioId }) {
     </div>
   );
 
-  const recorded = data.recorded_in_window || 0;
 
   return (
     <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden">
@@ -81,8 +80,8 @@ export default function DailyChangeTable({ portfolioId }) {
               <th className="py-2 px-4">Date</th>
               <th className="py-2 px-3 text-right">Day P&amp;L</th>
               <th className="py-2 px-3 text-right">Day %</th>
-              <th className="py-2 px-3 text-right">Value</th>
-              <th className="py-2 px-4 text-right">Total P&amp;L</th>
+              <th className="py-2 px-3 text-right">Stocks</th>
+              <th className="py-2 px-4 text-right">Value</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/50">
@@ -94,12 +93,6 @@ export default function DailyChangeTable({ portfolioId }) {
                   <td className="py-2 px-4 whitespace-nowrap">
                     <span className="font-semibold text-slate-200">{day}</span>
                     <span className="text-slate-600 ml-1.5 text-[10px]">{weekday}</span>
-                    {d.source === 'recorded' && (
-                      <Circle
-                        className="inline w-1.5 h-1.5 ml-1.5 fill-indigo-400 text-indigo-400"
-                        aria-label="recorded live"
-                      />
-                    )}
                   </td>
                   <td className={`py-2 px-3 text-right font-bold tabular-nums ${tone(d.change_inr)}`}>
                     <span className="inline-flex items-center gap-1 justify-end">
@@ -111,26 +104,12 @@ export default function DailyChangeTable({ portfolioId }) {
                   </td>
                   <td className={`py-2 px-3 text-right font-semibold tabular-nums ${tone(d.change_percent)}`}>
                     {fmtPct(d.change_percent)}
-                    {d.spans_sources && (
-                      <span className="text-slate-600 ml-1" title="Measured across the switch from reconstructed to recorded values">*</span>
-                    )}
                   </td>
-                  <td className="py-2 px-3 text-right text-slate-300 tabular-nums">
+                  <td className="py-2 px-3 text-right text-slate-500 tabular-nums">
+                    {d.positions ?? DASH}
+                  </td>
+                  <td className="py-2 px-4 text-right text-slate-300 tabular-nums">
                     {fmtInr(d.value_inr)}
-                  </td>
-                  <td className="py-2 px-4 text-right tabular-nums">
-                    {d.pnl_inr == null ? (
-                      <span className="text-slate-600">{DASH}</span>
-                    ) : (
-                      <>
-                        <span className={`font-bold ${tone(d.pnl_inr)}`}>
-                          {d.pnl_inr > 0 ? '+' : ''}{fmtInr(d.pnl_inr)}
-                        </span>
-                        <span className={`ml-1.5 text-[10px] ${tone(d.pnl_percent)}`}>
-                          {fmtPct(d.pnl_percent)}
-                        </span>
-                      </>
-                    )}
                   </td>
                 </tr>
               );
@@ -139,17 +118,11 @@ export default function DailyChangeTable({ portfolioId }) {
         </table>
       </div>
 
-      <div className="px-5 py-3 border-t border-slate-800 text-[10px] text-slate-500 space-y-1">
-        <p className="flex items-start gap-1.5">
-          <Circle className="w-1.5 h-1.5 mt-1 shrink-0 fill-indigo-400 text-indigo-400" />
-          <span>
-            {recorded > 0
-              ? `${recorded} day${recorded === 1 ? '' : 's'} in this window were recorded live and include total P&L.`
-              : 'Days recorded live will include total P&L.'}
-            {' '}Earlier days are reconstructed from price history — they value
-            today's holdings at old closes, so they cannot show what was
-            actually held then, and have no cost basis to compute P&L against.
-          </span>
+      <div className="px-5 py-3 border-t border-slate-800 text-[10px] text-slate-500">
+        <p>
+          Each day is the sum of every holding's P&amp;L that day — shares held
+          the day before earn the price move, shares bought that day earn price
+          less your average cost. Money you put in is never counted as profit.
         </p>
       </div>
     </div>

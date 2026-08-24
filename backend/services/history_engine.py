@@ -46,10 +46,17 @@ def _indexed(values: List[float]) -> List[Optional[float]]:
     return [round(v / base * 100, 3) if v and v > 0 else None for v in values]
 
 
-def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo") -> Dict[str, Any]:
+def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo",
+                  quantity_at=None) -> Dict[str, Any]:
     """Portfolio and benchmark series, each indexed to 100 at the first date.
 
-    `holdings` is a list of {"symbol", "country", "quantity"}.
+    `holdings` is a list of {"symbol", "country", "quantity"} giving the stocks
+    to price and today's quantity of each.
+
+    `quantity_at(symbol, country, day, fallback)` supplies the quantity held on
+    a given day, so the line reflects what was actually owned rather than
+    applying today's basket to the whole past. Omit it and the old behaviour —
+    today's quantities throughout — is used.
     """
     days = history_source.RANGE_DAYS.get(range_)
     if days is None:
@@ -115,11 +122,17 @@ def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo") -> Dict[s
             close = filled.get(key, {}).get(day)
             if close is None:
                 continue
+            # How much was held *that* day, not today. Without the change log
+            # this falls back to the current quantity, which prices a position
+            # bought last week as though it had been held all year.
+            held = quantity_at(key[0], key[1], day, qty) if quantity_at else qty
+            if held <= 0:
+                continue
             if key[1] == "US":
                 if rate <= 0:
                     continue
                 close *= rate
-            total += qty * close
+            total += held * close
         portfolio.append(round(total, 2))
 
     series: Dict[str, Any] = {

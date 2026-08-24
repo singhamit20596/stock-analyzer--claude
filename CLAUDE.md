@@ -46,9 +46,16 @@ database now holds password hashes as well as real holdings. Point the app at a
 scratch copy with `STOCKS_DB_PATH=/tmp/whatever.db` rather than editing the
 real one to try something out.
 
-**Saving holdings deletes and re-inserts rows.** Anything user-owned —
-`sector`, `section`, `first_seen_at` — must be carried across by symbol in
-`verify_and_save_holdings`, or the user's manual edits are silently wiped.
+**Saving holdings applies a diff, not a replacement.**
+`holdings_history.apply_import` compares the incoming snapshot against what is
+stored and only touches what moved, so rows keep their id, classification and
+`first_seen_at` without anything being carried across by hand. Re-importing the
+same screenshot is a no-op and writes nothing.
+
+Every move is logged to `holding_changes` as ADDED / REMOVED / INCREASED /
+DECREASED / REPRICED. Imports are broker *snapshots*, not a transaction feed:
+two buys between imports look like one increase, and nothing here knows about
+individual trades.
 
 **`first_seen_at` is not a purchase date.** It's when a stock first appeared in
 an OCR import. Treat it as a lower bound on the holding period. There is no
@@ -97,23 +104,89 @@ starting empty.
 `migrations.py` runs after `create_all` on every start, because `create_all`
 adds missing tables but never alters existing ones.
 
+## Holding history
+
+`holding_changes` is what lets the performance chart value each past day with
+the quantities held *then*, via `holdings_history.quantity_reader` →
+`history_engine.build_history(..., quantity_at=...)`. Without it the chart
+applies today's basket to the whole past, pricing a position bought last week
+as though it had been held all year.
+
+**OPENING is not ADDED.** The 92 holdings that predate the log were seeded with
+an OPENING event dated `first_seen_at`. OPENING means "already owned, only just
+recorded", so the reader carries it *backwards* before that date; ADDED means a
+real purchase, so the reader reads zero before it. Treating opening balances as
+purchases would show the whole portfolio materialising out of nothing on the
+day logging began. `seed_change_log` runs once and refuses to re-seed a
+non-empty log.
+
+## Price-change columns (1D/7D/30D/6M/1Y)
+
+`/api/portfolios/{id}/price-changes`, fetched separately from `/detail` so the
+table renders before a year of candles per holding has loaded.
+
+**1D uses the live quote when there is one.** The daily endpoints only publish a
+row once a session has closed, so comparing the last two candles labels a stale
+figure "1D" — on an Indian afternoon the US rows are still on last night's
+close. If a live quote differs from the last close, it becomes the measurement
+point and 1D reads "since the last close". A quote more than 25% adrift is
+treated as a bad scrape and ignored.
+
+Every row carries `as_of` and `reference_date`, and the UI states them, because
+the two markets are rarely on the same day.
+
+Two stages, and the split is the design:
+
+1. **`news_sources`** fetches real headlines from **Google News RSS** — free, no
+   key, works for NSE and US names. It alone decides what exists.
+2. **`llm_provider`** ranks and explains them, but only ever sees headlines that
+   were actually fetched, so it cannot invent one. No key → keyword scoring
+   stands in and the UI says so.
+
+The model is never asked to *search*. Given real headlines its job is judgement,
+which is the part keywords cannot do, and it costs a fraction of a search turn.
+
+**Provider is Gemini first, Anthropic second** (`GEMINI_API_KEY`, free from
+aistudio.google.com, or `ANTHROPIC_API_KEY`). Both are plain REST over `httpx` —
+no SDK import, deliberately: the venv is on an iCloud path where importing the
+Anthropic SDK from cold measured **eleven minutes** against 0.7s warm, which
+would land on the user's first click and look like a hang. That SDK is still
+warmed in a background thread at startup for the assistant's sake.
+
+RSS needs two filters that are not optional:
+- **Relevance.** Google treats a quoted phrase as a hint, not a filter — a
+  search for HDFC Bank returned Shriram Properties and sugar stocks. Every
+  headline must contain a distinctive word from the company name.
+- **13F churn.** A US ticker search floods with "X Boosts Stock Position in
+  NVIDIA". Several phrasings; see `NOISE`.
+
+Judgements are merged back by the index handed to the model, so a hallucinated
+item has nowhere to attach. `/api/stock/{symbol}/news` is the per-stock dive.
+
 ## Daily P&L
 
-`/api/portfolios/{id}/daily` returns the last 30 sessions, newest first, in its
-own section below the benchmark chart. Two sources feed it and rows say which:
+`/api/portfolios/{id}/daily` returns the last 30 **sessions**, newest first.
 
-- **recorded** — `portfolio_daily_snapshots`, written by
-  `daily_engine.record_snapshot` every time a portfolio is priced. There is no
-  scheduler, so **a day is only on record if the app was opened that day**, and
-  the stored value is the last one seen. These rows carry cost basis, so they
-  are the only ones with a total P&L.
-- **reconstructed** — `history_engine`, valuing today's quantities at old
-  closes. Fills in before recording started; has no cost basis and cannot see
-  past buys and sells.
+Each day is the **sum of every holding's P&L that day**, computed per stock —
+*not* the change in portfolio value. Differencing two portfolio values counts a
+day's buying as profit: an eight-position import once read +₹108,323 (+3.42%)
+when the real move was +₹19,941 (+0.61%). Per stock, per day:
 
-Rows accumulate forever; only the window is trimmed. A change measured across
-the boundary between the two sources is flagged, because part of the move is
-the method changing rather than the market.
+- shares held the day before → `qty × (close_today − close_yesterday)`
+- shares that appeared today → `qty × (close_today − average cost)`, once, then
+  carried on the price move afterwards
+- shares sold → stop contributing; there is no transaction history, so no
+  realised P&L can be booked
+
+The percentage divides by the same base those legs were measured from
+(yesterday's close for carried shares, cost for new ones).
+
+Prices come from `stock_detail.fetch_candles` — **not** `history_source`, which
+still reads Groww's epochs as UTC and so dates every Indian session a day early.
+
+`portfolio_daily_snapshots` is still written on every portfolio view, because it
+is the only record of what the portfolio was *observed* to be worth, but it is
+no longer what this table computes from.
 
 ## Taxonomy (user-defined, not GICS)
 

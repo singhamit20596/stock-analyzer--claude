@@ -13,6 +13,12 @@ import re
 # Company name (as it appears in broker UIs) -> US ticker.
 US_COMPANY_NAMES = {
     "ADOBE": "ADBE",
+    # Share class decides the ticker, so the class-specific names have to come
+    # before the bare one — otherwise a Class C holding is relabelled Class A.
+    "ALPHABET INC CLASS C": "GOOG",
+    "ALPHABET CLASS C": "GOOG",
+    "ALPHABET INC CLASS A": "GOOGL",
+    "ALPHABET CLASS A": "GOOGL",
     "ALPHABET": "GOOGL",
     "AMAZON": "AMZN",
     "AMD": "AMD",
@@ -90,8 +96,18 @@ INDIAN_COMPANY_NAMES = {
 
 COMPANY_NAME_TO_SYMBOL = {**US_COMPANY_NAMES, **INDIAN_COMPANY_NAMES}
 
-# Longest keys first so "SBI CARDS" wins over "SBI" regardless of dict order.
-_NAME_KEYS_BY_LENGTH = sorted(COMPANY_NAME_TO_SYMBOL, key=len, reverse=True)
+# Matching happens on names squashed to bare alphanumerics, because OCR often
+# reads a broker's wrapped column with the spaces missing: "SBI Cards And Pay"
+# comes back as "SBICardsAndPay", where the spaced key cannot match but the
+# three-letter "SBI" key can — which silently turned SBI Cards into State Bank
+# of India. Longest key first, so the specific name always beats the prefix.
+_SQUASH = re.compile(r"[^A-Z0-9]")
+
+_SQUASHED_NAME_KEYS = sorted(
+    ((_SQUASH.sub("", key), symbol) for key, symbol in COMPANY_NAME_TO_SYMBOL.items()),
+    key=lambda pair: len(pair[0]),
+    reverse=True,
+)
 
 # Tickers that a broker or an earlier OCR run may have stored in a truncated or
 # non-canonical form -> the symbol NSE (and therefore the quote APIs) expects.
@@ -170,15 +186,22 @@ def normalize_symbol(name_str: str) -> str:
     """
     cleaned = name_str.strip().upper()
 
-    for key in _NAME_KEYS_BY_LENGTH:
-        if key in cleaned:
-            return COMPANY_NAME_TO_SYMBOL[key]
+    def match(text: str) -> str:
+        squashed = _SQUASH.sub("", text)
+        for key, symbol in _SQUASHED_NAME_KEYS:
+            if key in squashed:
+                return symbol
+        return ""
+
+    found = match(cleaned)
+    if found:
+        return found
 
     # Retry without corporate-suffix noise ("APPLE INC" -> "APPLE").
     stripped = _NOISE_WORDS.sub("", cleaned).strip()
-    for key in _NAME_KEYS_BY_LENGTH:
-        if key in stripped:
-            return COMPANY_NAME_TO_SYMBOL[key]
+    found = match(stripped)
+    if found:
+        return found
 
-    slug = re.sub(r"[^A-Z0-9]", "", stripped)
+    slug = _SQUASH.sub("", stripped)
     return slug[:10] if slug else "STOCK"

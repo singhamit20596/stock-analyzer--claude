@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft, Upload, Image, Layers, X, CheckCircle2, PiggyBank, ChevronRight } from 'lucide-react';
+import HoldingChanges from './HoldingChanges';
 
 // Update type options
 const UPDATE_TYPES = {
@@ -634,6 +635,12 @@ export default function AccountDetailView({ accounts, onImageOCRUpload, onSelect
               </table>
             </div>
           </div>
+
+          <HoldingChanges
+            accountId={selectedAccountId}
+            currencySymbol={currencySymbol}
+            refreshKey={accountData?.summary?.total_current_value}
+          />
         </>
       )}
 
