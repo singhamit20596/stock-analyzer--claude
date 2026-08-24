@@ -128,6 +128,7 @@ TICKER_ALIASES = {
     "NUVAMAWEAL": "NUVAMA",
     "SBICARDS": "SBICARD",
     "SBICARDSANDPAY": "SBICARD",
+    "YATHARTHHO": "YATHARTH",
 }
 
 # Funds, not companies. They have no P/E, ROE, EPS or quarterly results, and
