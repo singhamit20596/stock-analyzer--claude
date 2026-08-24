@@ -8,6 +8,8 @@ portfolio called "Family IND".
 
 Every step checks the current shape first, so running this repeatedly is safe.
 """
+import uuid
+
 from sqlalchemy import inspect, text
 
 # table -> column -> DDL fragment
@@ -95,6 +97,47 @@ def _needs_rebuild(connection, table: str) -> bool:
         if "user_id" not in indexed:
             return True
     return False
+
+
+def seed_change_log(engine) -> int:
+    """Give holdings that predate the change log an opening entry.
+
+    Without this the log starts empty and the performance chart would treat
+    every existing position as never having been held. Each holding gets one
+    OPENING event dated `first_seen_at` — the earliest point the app can
+    honestly claim to have known about it. OPENING rather than ADDED because
+    these positions were not bought that day, they were merely discovered, and
+    the chart carries them backwards rather than starting them from zero.
+
+    Runs once: a non-empty log means imports have been recorded since, and
+    re-seeding would invent positions that were never opened.
+    """
+    with engine.begin() as connection:
+        if not (_table_exists(connection, "holding_changes")
+                and _table_exists(connection, "holdings")):
+            return 0
+        already = connection.exec_driver_sql(
+            "SELECT COUNT(*) FROM holding_changes").fetchone()[0]
+        if already:
+            return 0
+
+        rows = connection.exec_driver_sql("""
+            SELECT h.id, h.account_id, h.symbol, h.company_name, h.country,
+                   h.quantity, h.avg_buy_price,
+                   COALESCE(h.first_seen_at, a.created_at, CURRENT_TIMESTAMP)
+            FROM holdings h LEFT JOIN accounts a ON a.id = h.account_id
+        """).fetchall()
+
+        for _, account_id, symbol, company, country, quantity, avg_price, seen in rows:
+            connection.exec_driver_sql(
+                "INSERT INTO holding_changes (id, account_id, symbol, company_name,"
+                " country, change_type, quantity_before, quantity_after,"
+                " avg_price_before, avg_price_after, changed_at)"
+                " VALUES (?,?,?,?,?,'OPENING',0,?,NULL,?,?)",
+                (str(uuid.uuid4()), account_id, (symbol or "").strip().upper(),
+                 company or symbol, country or "IND", quantity, avg_price, seen),
+            )
+        return len(rows)
 
 
 def run(engine) -> dict:

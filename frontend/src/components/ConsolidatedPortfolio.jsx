@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import {
-  ChevronDown, ChevronUp, Search, Plus,
+  ChevronDown, ChevronUp, Search, Plus, SlidersHorizontal,
   Layers, Trash2, X, CheckCircle2, AlertCircle, Edit2, Globe
 } from 'lucide-react';
 import AllocationPie from './AllocationPie';
 import PerformanceChart from './PerformanceChart';
 import DailyChangeTable from './DailyChangeTable';
+import PortfolioNews from './PortfolioNews';
 
 // Current value summed per distinct value of `key`, for the pie charts.
 function groupBy(rows, key) {
@@ -112,6 +113,51 @@ function PortfolioCreatorModal({ accounts, existingPortfolio, onClose, onSave })
   );
 }
 
+// Price-move columns, shortest window first. Keys match the API's fields.
+const PRICE_WINDOWS = [
+  { key: 'd1', label: '1D' },
+  { key: 'd7', label: '7D' },
+  { key: 'd30', label: '30D' },
+  { key: 'm6', label: '6M' },
+  { key: 'y1', label: '1Y' },
+];
+
+// Numeric columns the filter row drives, in table order.
+const NUMERIC_COLUMNS = [
+  'mkt_price_inr',
+  ...PRICE_WINDOWS.map(w => `chg_${w.key}`),
+  'portfolio_avg_inr', 'invested_value_inr', 'current_value_inr',
+  'pnl_percent', 'allocation_percent',
+];
+
+/** Does `value` satisfy a filter expression?
+ *
+ *  Accepts ">5", ">=5", "<-2", "=3", or a range "1..5". A bare number means
+ *  "at least". One box per column rather than a min/max pair, because twelve
+ *  columns of paired inputs will not fit a table that already scrolls
+ *  sideways. A hyphen is deliberately not a range separator — "-5-2" cannot be
+ *  read unambiguously once negatives are in play.
+ */
+function matchesNumber(value, expr) {
+  const raw = (expr || '').trim();
+  if (!raw) return true;
+  // An active filter on a column with no data excludes the row: "1D > 5"
+  // should not surface a stock whose 1D is unknown.
+  if (value == null || Number.isNaN(value)) return false;
+
+  const range = raw.match(/^(-?\d+(?:\.\d+)?)\s*(?:\.\.|:)\s*(-?\d+(?:\.\d+)?)$/);
+  if (range) return value >= parseFloat(range[1]) && value <= parseFloat(range[2]);
+
+  const cmp = raw.match(/^(>=|<=|>|<|=)?\s*(-?\d+(?:\.\d+)?)$/);
+  if (!cmp) return true;              // half-typed or nonsense: ignore, don't blank the table
+  const n = parseFloat(cmp[2]);
+  if (cmp[1] === '>') return value > n;
+  if (cmp[1] === '<') return value < n;
+  if (cmp[1] === '<=') return value <= n;
+  if (cmp[1] === '=') return value === n;
+  return value >= n;                  // bare number, and ">="
+}
+
 // ─── Portfolio Table View ──────────────────────────────────────────────────────
 function PortfolioTableView({ portfolioId, onSelectStock }) {
   const [detail, setDetail] = useState(null);
@@ -120,6 +166,14 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
   const [sortKey, setSortKey] = useState('current_value_inr');
   const [sortAsc, setSortAsc] = useState(false);
   const [showCompleteOnly, setShowCompleteOnly] = useState(false);
+  const [changes, setChanges] = useState(null);
+  const [changesLoading, setChangesLoading] = useState(true);
+  const [filters, setFilters] = useState({});
+  const [showFilters, setShowFilters] = useState(false);
+
+  const setFilter = (key, value) =>
+    setFilters(current => ({ ...current, [key]: value }));
+  const activeFilters = Object.values(filters).filter(v => v && String(v).trim()).length;
 
   const fetchDetail = useCallback(async () => {
     if (!portfolioId) return;
@@ -131,7 +185,20 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
     finally { setLoading(false); }
   }, [portfolioId]);
 
+  // Fetched separately so the table appears immediately: on a cold cache this
+  // reads a year of candles per holding and would otherwise hold up the page.
+  const fetchChanges = useCallback(async () => {
+    if (!portfolioId) return;
+    setChangesLoading(true);
+    try {
+      const res = await fetch(`/api/portfolios/${portfolioId}/price-changes`);
+      if (res.ok) setChanges((await res.json()).changes || {});
+    } catch (e) { console.error(e); }
+    finally { setChangesLoading(false); }
+  }, [portfolioId]);
+
   useEffect(() => { fetchDetail(); }, [fetchDetail]);
+  useEffect(() => { fetchChanges(); }, [fetchChanges]);
 
   if (loading) return (
     <div className="flex flex-col items-center justify-center py-24 text-slate-400 space-y-4">
@@ -142,8 +209,35 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
 
   if (!detail) return null;
 
-  const { summary, rows, accounts, usd_inr_rate } = detail;
+  const { summary, accounts, usd_inr_rate } = detail;
   const isPositive = (summary.total_pnl_inr || 0) >= 0;
+
+  // Price moves arrive on their own request, so they are merged onto the rows
+  // here — flattened rather than nested so the columns sort like any other.
+  const rows = (detail.rows || []).map((row) => {
+    const move = changes?.[`${row.symbol}:${row.country}`];
+    if (!move) return row;
+    return {
+      ...row,
+      chg_d1: move.d1, chg_d7: move.d7, chg_d30: move.d30,
+      chg_m6: move.m6, chg_y1: move.y1,
+      chg_as_of: move.as_of, chg_ref_date: move.reference_date,
+    };
+  });
+
+  // The two markets close at different times, so on any given afternoon the
+  // Indian rows are live and the US rows are still on last night's close. The
+  // header would otherwise imply both are "today".
+  const asOfByMarket = {};
+  rows.forEach((r) => {
+    if (r.chg_as_of) asOfByMarket[r.country] = r.chg_as_of;
+  });
+
+  // Only the values actually held, so a dropdown never offers a choice that
+  // empties the table. Sector and section have no columns of their own — they
+  // were taken out of the table — so they filter from the bar instead.
+  const sectorOptions = [...new Set(rows.map(r => r.sector).filter(Boolean))].sort();
+  const sectionOptions = [...new Set(rows.map(r => r.section).filter(Boolean))].sort();
 
   // "Complete" = held in every account of this portfolio. A US-only account
   // can never hold an Indian stock, so only accounts of the row's own market
@@ -159,7 +253,17 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
     const term = searchTerm.toLowerCase();
     const matchesSearch = r.symbol.toLowerCase().includes(term) ||
       r.company_name.toLowerCase().includes(term);
-    return matchesSearch && (!showCompleteOnly || isComplete(r));
+    if (!matchesSearch || (showCompleteOnly && !isComplete(r))) return false;
+
+    // Per-column filters, all ANDed together.
+    if (filters.stock) {
+      const needle = filters.stock.toLowerCase();
+      if (!`${r.symbol} ${r.company_name}`.toLowerCase().includes(needle)) return false;
+    }
+    if (filters.country && r.country !== filters.country) return false;
+    if (filters.sector && (r.sector || '') !== filters.sector) return false;
+    if (filters.section && (r.section || '') !== filters.section) return false;
+    return NUMERIC_COLUMNS.every(key => matchesNumber(r[key], filters[key]));
   });
 
   const sorted = [...filtered].sort((a, b) => {
@@ -325,6 +429,28 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
         >
           {showCompleteOnly ? 'Showing Complete Only' : 'Complete Holdings Only'}
         </button>
+
+        <button
+          onClick={() => setShowFilters(v => !v)}
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+            showFilters || activeFilters
+              ? 'bg-indigo-500 text-white'
+              : 'bg-slate-800 text-slate-300 hover:bg-slate-700'
+          }`}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          Filters{activeFilters > 0 && ` (${activeFilters})`}
+        </button>
+
+        {activeFilters > 0 && (
+          <button
+            onClick={() => setFilters({})}
+            className="text-[11px] text-slate-400 hover:text-slate-200 whitespace-nowrap underline underline-offset-2"
+          >
+            Clear
+          </button>
+        )}
+
         <span className="text-[10px] text-slate-500 whitespace-nowrap">
           {filtered.length} of {rows.length}
         </span>
@@ -334,32 +460,70 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
       <div className="glass-panel rounded-2xl border border-slate-800 overflow-hidden shadow-xl">
         <div className="p-4 border-b border-slate-800 bg-slate-900/60">
           <h3 className="text-sm font-bold text-slate-200">All values shown in ₹ INR · USD converted at live rate (₹{usd_inr_rate})</h3>
-          <p className="text-xs text-slate-400">Click column headers to sort</p>
+          <p className="text-xs text-slate-400">
+            Click column headers to sort
+            {showFilters && (
+              <span className="text-slate-500">
+                {' · '}filter with <code className="text-slate-300">&gt;5</code>,{' '}
+                <code className="text-slate-300">&lt;-2</code>,{' '}
+                <code className="text-slate-300">1..5</code>, or a plain number for “at least”
+              </span>
+            )}
+          </p>
         </div>
+
+        {/* Attribute filters. Market, sector and section describe *which* stock
+            rather than a value in a column, so they sit here instead of in the
+            header row — and sector and section have no column to sit under. */}
+        {showFilters && (
+          <div className="px-4 py-3 border-b border-slate-800 bg-slate-900/40 flex flex-wrap items-center gap-x-5 gap-y-2">
+            {[
+              { key: 'country', label: 'Market', options: [['IND', '🇮🇳 India'], ['US', '🇺🇸 US']] },
+              { key: 'sector', label: 'Sector', options: sectorOptions.map(s => [s, s]) },
+              { key: 'section', label: 'Section', options: sectionOptions.map(s => [s, s]) },
+            ].map(({ key, label, options }) => (
+              <label key={key} className="flex items-center gap-2 text-[11px]">
+                <span className="uppercase tracking-wider font-bold text-slate-500">{label}</span>
+                <select
+                  value={filters[key] || ''}
+                  onChange={e => setFilter(key, e.target.value)}
+                  className={`bg-slate-950 border rounded-lg px-2 py-1 text-[11px] text-slate-200
+                              focus:outline-none focus:border-indigo-500 ${
+                                filters[key] ? 'border-indigo-500/60' : 'border-slate-700'}`}
+                >
+                  <option value="">All</option>
+                  {options.map(([value, text]) => (
+                    <option key={value} value={value}>{text}</option>
+                  ))}
+                </select>
+              </label>
+            ))}
+            {sectorOptions.length === 0 && (
+              <span className="text-[10px] text-slate-600">
+                Nothing classified yet — set sector and section in the Classification tab.
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-900/80 border-b border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="py-3 px-3 sticky left-0 bg-slate-900/80 z-10">Stock</th>
-                <th className="py-3 px-3 whitespace-nowrap">Sector</th>
-                {/* Per-account columns */}
-                {accounts.map(acc => (
-                  <React.Fragment key={acc.id}>
-                    <th className="py-3 px-2 text-right whitespace-nowrap">
-                      <span className="text-indigo-300">{acc.name}</span> Qty
-                    </th>
-                    <th className="py-3 px-2 text-right whitespace-nowrap">
-                      <span className="text-indigo-300">{acc.name}</span> Avg (₹)
-                    </th>
-                  </React.Fragment>
-                ))}
+                {/* Per-account qty and avg are deliberately not here: this
+                    table is the consolidated picture. The split by account
+                    lives on the stock's own page. */}
                 <th className="py-3 px-3 text-right cursor-pointer hover:text-slate-200" onClick={() => handleSort('mkt_price_inr')}>
                   Mkt Price (₹)<SortIcon col="mkt_price_inr" />
                 </th>
-                <th className="py-3 px-3 text-right cursor-pointer hover:text-slate-200" onClick={() => handleSort('portfolio_qty')}>
-                  Portfolio Qty<SortIcon col="portfolio_qty" />
-                </th>
+                {PRICE_WINDOWS.map(w => (
+                  <th key={w.key}
+                      className="py-3 px-2 text-right whitespace-nowrap cursor-pointer hover:text-slate-200"
+                      onClick={() => handleSort(`chg_${w.key}`)}>
+                    {w.label}<SortIcon col={`chg_${w.key}`} />
+                  </th>
+                ))}
                 <th className="py-3 px-3 text-right">Portfolio Avg (₹)</th>
                 <th className="py-3 px-3 text-right cursor-pointer hover:text-slate-200" onClick={() => handleSort('invested_value_inr')}>
                   Invested (₹)<SortIcon col="invested_value_inr" />
@@ -374,6 +538,36 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
                   Allocation<SortIcon col="allocation_percent" />
                 </th>
               </tr>
+
+              {showFilters && (
+                <tr className="bg-slate-900/60 border-b border-slate-800">
+                  <th className="py-2 px-3 sticky left-0 bg-slate-900/95 z-10">
+                    <input
+                      value={filters.stock || ''}
+                      onChange={e => setFilter('stock', e.target.value)}
+                      placeholder="name or symbol"
+                      className={`w-full min-w-[130px] bg-slate-950 border rounded px-1.5 py-1 text-[11px]
+                                  font-normal normal-case tracking-normal text-slate-200 placeholder-slate-600
+                                  focus:outline-none focus:border-indigo-500 ${
+                                    filters.stock ? 'border-indigo-500/60' : 'border-slate-700'}`}
+                    />
+                  </th>
+                  {NUMERIC_COLUMNS.map(key => (
+                    <th key={key} className="py-2 px-2">
+                      <input
+                        value={filters[key] || ''}
+                        onChange={e => setFilter(key, e.target.value)}
+                        placeholder=">0"
+                        title={'">5", "<-2", "1..5", or a bare number meaning at least'}
+                        className={`w-full min-w-[52px] bg-slate-950 border rounded px-1.5 py-1 text-[11px]
+                                    font-normal normal-case tracking-normal text-right text-slate-200
+                                    placeholder-slate-700 focus:outline-none focus:border-indigo-500 ${
+                                      filters[key] ? 'border-indigo-500/60' : 'border-slate-700'}`}
+                      />
+                    </th>
+                  ))}
+                </tr>
+              )}
             </thead>
             <tbody className="divide-y divide-slate-800/60">
               {sorted.map((row) => {
@@ -402,31 +596,25 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
                       </div>
                     </td>
 
-                    <td className="py-3 px-3 text-slate-300 whitespace-nowrap">
-                      {row.sector || <span className="text-slate-600">—</span>}
-                    </td>
-
-                    {/* Per-account qty and avg */}
-                    {accounts.map(acc => {
-                      const entry = row.per_account[acc.id];
-                      return (
-                        <React.Fragment key={acc.id}>
-                          <td className="py-3 px-2 text-right font-medium text-slate-200">
-                            {entry ? fmtN(entry.qty, 4) : <span className="text-slate-600">—</span>}
-                          </td>
-                          <td className="py-3 px-2 text-right font-medium text-slate-300">
-                            {entry ? `₹${fmtN(entry.avg_inr)}` : <span className="text-slate-600">—</span>}
-                          </td>
-                        </React.Fragment>
-                      );
-                    })}
-
                     <td className="py-3 px-3 text-right font-bold text-indigo-400">
                       {row.mkt_price_inr > 0 ? `₹${fmtN(row.mkt_price_inr)}` : <span className="text-slate-500">—</span>}
                     </td>
-                    <td className="py-3 px-3 text-right font-medium text-slate-200">
-                      {fmtN(row.portfolio_qty, 4)}
-                    </td>
+                    {PRICE_WINDOWS.map(w => {
+                      const value = row[`chg_${w.key}`];
+                      return (
+                        <td key={w.key} className="py-3 px-2 text-right whitespace-nowrap"
+                            title={w.key === 'd1' && row.chg_as_of
+                              ? `${row.chg_ref_date} → ${row.chg_as_of === 'live' ? 'live price' : row.chg_as_of}`
+                              : undefined}>
+                          {value == null
+                            ? <span className="text-slate-700">{changesLoading ? '·' : '—'}</span>
+                            : <span className={`font-semibold ${
+                                value > 0 ? 'text-emerald-400' : value < 0 ? 'text-rose-400' : 'text-slate-400'}`}>
+                                {value > 0 ? '+' : ''}{value.toFixed(1)}%
+                              </span>}
+                        </td>
+                      );
+                    })}
                     <td className="py-3 px-3 text-right font-medium text-slate-200">
                       ₹{fmtN(row.portfolio_avg_inr)}
                     </td>
@@ -463,7 +651,26 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
         {sorted.length === 0 && (
           <div className="py-12 text-center text-slate-400 text-sm">No holdings found matching "{searchTerm}"</div>
         )}
+
+        {Object.keys(asOfByMarket).length > 0 && (
+          <div className="px-4 py-2.5 border-t border-slate-800 text-[10px] text-slate-500">
+            Price change measured to{' '}
+            {Object.entries(asOfByMarket).map(([market, asOf], i) => (
+              <span key={market}>
+                {i > 0 && ' · '}
+                <span className="text-slate-400">{market === 'US' ? '🇺🇸 US' : '🇮🇳 India'}</span>{' '}
+                {asOf === 'live' ? 'live price' : `${asOf} close`}
+              </span>
+            ))}
+            . 1D is the move since the previous close — hover a 1D cell for the exact dates.
+          </div>
+        )}
       </div>
+
+      {/* Last on the page, after the holdings it reports on. Manually
+          triggered — a web search across every holding is slow and costs real
+          money, so it runs when asked rather than on page load. */}
+      <PortfolioNews portfolioId={portfolioId} />
     </div>
   );
 }

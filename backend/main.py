@@ -1,5 +1,6 @@
 import os
 import shutil
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -18,7 +19,8 @@ from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
 from services import (auth_engine, chat_agent, daily_engine, history_engine,
-                      position_engine, stock_detail, target_engine, taxonomy)
+                      holdings_history, news_engine, position_engine,
+                      price_moves, stock_detail, target_engine, taxonomy)
 from services.quote_service import (fetch_live_prices_batch, fetch_sector,
                                    fetch_sectors_batch, fetch_usd_to_inr_rate)
 from services.symbols import guess_market, normalize_symbol
@@ -27,9 +29,28 @@ models.Base.metadata.create_all(bind=engine)
 # create_all only adds missing tables, so a database from before logins existed
 # still needs its columns and unique constraints brought up to date.
 migrations.run(engine)
+migrations.seed_change_log(engine)
 
 SCREENSHOTS_DIR = os.path.join(os.path.dirname(__file__), "screenshots")
 os.makedirs(SCREENSHOTS_DIR, exist_ok=True)
+
+
+def _warm_anthropic_sdk() -> None:
+    """Fault the Anthropic SDK in ahead of the first request that needs it.
+
+    The venv sits on an iCloud path, and once macOS has evicted the package
+    the import has to pull it back down — measured at eleven minutes from cold,
+    against 0.7s warm. Both the assistant and the news fetch import it lazily,
+    so without this the first click on either looks like the app has hung.
+    Failure is ignored: this is a cache warm-up, not a dependency check.
+    """
+    try:
+        import anthropic  # noqa: F401
+    except Exception:
+        pass
+
+
+threading.Thread(target=_warm_anthropic_sdk, daemon=True).start()
 
 app = FastAPI(
     title="Multi-Broker Stock Portfolio Manager & Rebalancer",
@@ -385,6 +406,15 @@ def get_account_screenshot(account_id: str, db: Session = Depends(get_db),
     return FileResponse(acc.latest_screenshot_path, media_type="image/png")
 
 
+@app.get("/api/accounts/{account_id}/changes")
+def get_account_changes(account_id: str, limit: int = Query(100, ge=1, le=500),
+                        db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    """What each import changed in this account, most recent first."""
+    _account_or_404(db, view, account_id)
+    return {"account_id": account_id,
+            "changes": holdings_history.recent_changes(db, [account_id], limit)}
+
+
 @app.get("/api/accounts/{account_id}/detail")
 def get_account_detail(account_id: str, db: Session = Depends(get_db),
                        view: Viewer = Depends(viewer)):
@@ -550,35 +580,17 @@ def verify_and_save_holdings(
     # Rows are deleted and re-inserted below, so anything the user owns has to
     # be carried across by symbol: their sector/section edits, and the date the
     # position was first seen.
-    carried = {
-        h.symbol.strip().upper(): (h.sector, h.section, h.first_seen_at)
-        for h in prior
-    }
-
     final_holdings, warnings = AccountDeduplicator.process_deduplication(
         existing_holdings=existing,
         incoming_holdings=[h.dict() for h in request.holdings],
         strategy=strategy,
     )
 
-    now = _utcnow()
-    db.query(models.Holding).filter(models.Holding.account_id == account.id).delete()
-    for h in final_holdings:
-        sector, section, first_seen = carried.get(h["symbol"].strip().upper(), (None, None, None))
-        db.add(models.Holding(
-            account_id=account.id,
-            symbol=h["symbol"],
-            company_name=h.get("company_name") or h["symbol"],
-            quantity=h["quantity"],
-            avg_buy_price=h["avg_buy_price"],
-            current_price=h.get("current_price") or 0.0,
-            country=country,
-            currency=currency,
-            sector=sector,
-            section=section,
-            first_seen_at=first_seen or now,
-            is_user_verified=1,
-        ))
+    # Applied as a diff, not a replacement: rows that did not move keep their
+    # id, their classification and their first_seen_at, and everything that did
+    # move is written to the change log so the history can be reconstructed.
+    result = holdings_history.apply_import(
+        db, account, final_holdings, country, currency, when=_utcnow())
 
     account.last_synced_at = _utcnow()
     db.add(models.SyncLog(
@@ -589,6 +601,10 @@ def verify_and_save_holdings(
     return {
         "message": "Holdings saved successfully",
         "count": len(final_holdings),
+        "changed": result["changed"],
+        "unchanged": result["unchanged"],
+        "changes": result["counts"],
+        "events": result["events"],
         "warnings": warnings,
     }
 
@@ -1107,10 +1123,74 @@ def get_portfolio_history(portfolio_id: str, range: str = "3mo",
     history_engine for what that does and does not represent.
     """
     portfolio = _portfolio_or_404(db, view, portfolio_id)
-    result = history_engine.build_history(_holding_rows_for_history(db, portfolio), range)
+    result = history_engine.build_history(
+        _holding_rows_for_history(db, portfolio), range,
+        quantity_at=_quantity_reader(db, portfolio).at)
     result["portfolio_id"] = portfolio_id
     result["portfolio_name"] = portfolio.name
     return result
+
+
+def _portfolio_holdings_for_news(db: Session, portfolio) -> List[Dict[str, Any]]:
+    """One entry per distinct stock in the portfolio, with its best-known name."""
+    account_ids = [link.account.id for link in portfolio.account_links if link.account]
+    if not account_ids:
+        return []
+    holdings = (db.query(models.Holding)
+                .filter(models.Holding.account_id.in_(account_ids)).all())
+
+    distinct: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    for h in holdings:
+        symbol = (h.symbol or "").strip().upper()
+        if not symbol:
+            continue
+        key = (symbol, (h.country or "IND").upper())
+        name = (h.company_name or "").strip()
+        entry = distinct.setdefault(
+            key, {"symbol": symbol, "country": key[1], "company_name": name})
+        # OCR truncates names; the longest one seen is the most complete.
+        if len(name) > len(entry["company_name"]):
+            entry["company_name"] = name
+    return list(distinct.values())
+
+
+def _positions_for_pnl(db: Session, portfolio) -> List[Dict[str, Any]]:
+    """One entry per (symbol, market) with total quantity and weighted average
+    cost in the instrument's own currency.
+
+    The average cost is what a newly-arrived position is measured against on
+    its first day, so it has to be the cost actually paid, not a market price.
+    """
+    accounts = [link.account for link in portfolio.account_links if link.account]
+    account_map = {a.id: a for a in accounts}
+    if not account_map:
+        return []
+    holdings = (db.query(models.Holding)
+                .filter(models.Holding.account_id.in_(list(account_map))).all())
+
+    totals: Dict[Tuple[str, str], Dict[str, float]] = {}
+    for h in holdings:
+        symbol = (h.symbol or "").strip().upper()
+        if not symbol or not h.quantity:
+            continue
+        country = "US" if account_currency(account_map.get(h.account_id)) == "USD" else "IND"
+        bucket = totals.setdefault((symbol, country), {"quantity": 0.0, "cost": 0.0})
+        bucket["quantity"] += float(h.quantity)
+        bucket["cost"] += float(h.quantity) * float(h.avg_buy_price or 0.0)
+
+    return [
+        {"symbol": symbol, "country": country,
+         "quantity": round(bucket["quantity"], 6),
+         "avg_cost_native": round(bucket["cost"] / bucket["quantity"], 4)
+                            if bucket["quantity"] else 0.0}
+        for (symbol, country), bucket in totals.items()
+    ]
+
+
+def _quantity_reader(db: Session, portfolio) -> holdings_history.QuantityReader:
+    """Replays the change log for this portfolio's accounts."""
+    account_ids = [link.account.id for link in portfolio.account_links if link.account]
+    return holdings_history.quantity_reader(db, account_ids)
 
 
 def _holding_rows_for_history(db: Session, portfolio) -> List[Dict[str, Any]]:
@@ -1132,6 +1212,65 @@ def _holding_rows_for_history(db: Session, portfolio) -> List[Dict[str, Any]]:
     ]
 
 
+@app.get("/api/portfolios/{portfolio_id}/price-changes")
+def get_portfolio_price_changes(portfolio_id: str, db: Session = Depends(get_db),
+                                view: Viewer = Depends(viewer)):
+    """1D/7D/30D/6M/1Y move for every holding in the portfolio.
+
+    Separate from `/detail` on purpose: on a cold cache this reads a year of
+    candles per symbol, and the table should render immediately and fill these
+    columns in rather than wait.
+    """
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
+    rows = _holding_rows_for_history(db, portfolio)
+    return {"portfolio_id": portfolio_id,
+            "changes": price_moves.changes_for_many(
+                (r["symbol"], r["country"]) for r in rows)}
+
+
+@app.post("/api/portfolios/{portfolio_id}/news")
+def get_portfolio_news(portfolio_id: str,
+                       window_days: int = Query(news_engine.DEFAULT_WINDOW_DAYS, ge=1, le=90),
+                       db: Session = Depends(get_db), view: Viewer = Depends(viewer)):
+    """Material news across the portfolio's holdings.
+
+    A POST because it is an action with a real cost — a dozen web searches
+    against a paid model — not something to fire on every page load.
+    """
+    portfolio = _portfolio_or_404(db, view, portfolio_id)
+
+    holdings = _portfolio_holdings_for_news(db, portfolio)
+    if not holdings:
+        return {"items": [], "covered": 0, "holdings": 0}
+
+    try:
+        result = news_engine.portfolio_news(holdings, window_days)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"News lookup failed: {exc}")
+
+    result["holdings"] = len(holdings)
+    result["fetched_at"] = _utcnow()
+    return result
+
+
+@app.post("/api/stock/{symbol}/news")
+def get_stock_news(symbol: str, country: str = Query("IND"),
+                   company_name: str = Query(""),
+                   window_days: int = Query(30, ge=1, le=90),
+                   view: Viewer = Depends(viewer)):
+    """A deeper read on one stock, for the "more" action on a news card."""
+    try:
+        result = news_engine.stock_news(symbol, company_name, country, window_days)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"News lookup failed: {exc}")
+    result["fetched_at"] = _utcnow()
+    return result
+
+
 @app.get("/api/portfolios/{portfolio_id}/daily")
 def get_portfolio_daily(portfolio_id: str,
                         limit: int = Query(daily_engine.DISPLAY_DAYS, ge=1, le=365),
@@ -1145,11 +1284,9 @@ def get_portfolio_daily(portfolio_id: str,
     """
     portfolio = _portfolio_or_404(db, view, portfolio_id)
 
-    # 3 months of sessions so a 30-row window is full even though weekends and
-    # holidays do not produce rows.
-    history = history_engine.build_history(_holding_rows_for_history(db, portfolio), "3mo")
-
-    result = daily_engine.build_daily(db, portfolio_id, history, limit)
+    result = daily_engine.build_daily(
+        db, portfolio_id, _positions_for_pnl(db, portfolio),
+        _quantity_reader(db, portfolio).at, limit)
     result["portfolio_name"] = portfolio.name
     return result
 

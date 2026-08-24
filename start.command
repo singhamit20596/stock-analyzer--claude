@@ -18,6 +18,12 @@ VENV="$BACKEND/venv"
 PORT=8080
 URL="http://127.0.0.1:$PORT"
 
+# Readiness is checked against an endpoint that needs no login. Every other
+# /api route answers 401 until someone signs in, and `curl -sf` treats that as
+# a failure — so probing one of those makes a perfectly healthy server look
+# like it never came up.
+HEALTH="$URL/api/auth/status"
+
 bold() { printf '\033[1m%s\033[0m\n' "$1"; }
 info() { printf '  %s\n' "$1"; }
 fail() { printf '\033[31mError:\033[0m %s\n' "$1" >&2; }
@@ -34,7 +40,7 @@ bold "Stocks Analyzer"
 echo
 
 # ── 1. Already running? ───────────────────────────────────────────────────────
-if curl -sf --max-time 2 "$URL/api/accounts" >/dev/null 2>&1; then
+if curl -sf --max-time 2 "$HEALTH" >/dev/null 2>&1; then
     info "Already running at $URL — opening it."
     open "$URL"
     exit 0
@@ -119,7 +125,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 for _ in $(seq 1 45); do
-    if curl -sf --max-time 2 "$URL/api/accounts" >/dev/null 2>&1; then
+    if curl -sf --max-time 2 "$HEALTH" >/dev/null 2>&1; then
         break
     fi
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
@@ -128,7 +134,7 @@ for _ in $(seq 1 45); do
     sleep 1
 done
 
-if ! curl -sf --max-time 2 "$URL/api/accounts" >/dev/null 2>&1; then
+if ! curl -sf --max-time 2 "$HEALTH" >/dev/null 2>&1; then
     die "Server did not come up within 45s."
 fi
 

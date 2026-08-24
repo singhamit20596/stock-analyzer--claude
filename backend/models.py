@@ -78,6 +78,35 @@ class Holding(Base):
     account = relationship("Account", back_populates="holdings")
 
 
+class HoldingChange(Base):
+    """What an import actually changed, one row per stock that moved.
+
+    Imports used to delete every holding and re-insert it, which made each one
+    look like a fresh position and left no record of what had moved. Charts
+    then had no choice but to value the whole past with today's quantities.
+
+    These rows are that record. `quantity_after` is the important one: reading
+    the log up to a date gives the quantities held on that date, which is what
+    lets the history be reconstructed honestly.
+    """
+    __tablename__ = "holding_changes"
+
+    id = Column(String, primary_key=True, default=generate_uuid)
+    account_id = Column(String, ForeignKey("accounts.id"), nullable=False, index=True)
+    symbol = Column(String, nullable=False, index=True)
+    company_name = Column(String, default="")
+    country = Column(String, default="IND")
+    # ADDED, REMOVED, INCREASED, DECREASED or REPRICED (quantity unchanged,
+    # average cost moved — which is what a fresh buy at a new price looks like
+    # once the broker has averaged it in).
+    change_type = Column(String, nullable=False)
+    quantity_before = Column(Float, default=0.0)
+    quantity_after = Column(Float, default=0.0)
+    avg_price_before = Column(Float, nullable=True)
+    avg_price_after = Column(Float, nullable=True)
+    changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), index=True)
+
+
 class WatchStock(Base):
     """A stock classified but not held in any account.
 
