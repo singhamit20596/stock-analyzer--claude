@@ -70,11 +70,15 @@ history comes from Groww + Nasdaq + Frankfurter instead.
 
 **Groww stamps a daily candle at 00:00 IST, which is 18:30 UTC the day
 before.** Read as UTC, every session lands a day early and Monday looks like
-Sunday. `stock_detail` converts in IST and gets a clean Mon–Fri series.
-`history_source` still reads UTC and `history_engine` then drops the
-"Sunday" candles — which are really Mondays, so the performance chart is
-silently missing one session a week. Not fixed here; it is a separate change
-to the portfolio history path.
+Sunday. Both `stock_detail` and `history_source` convert in IST and get a clean
+Mon–Fri series; any new reader of a Groww epoch must do the same.
+
+`history_source` read UTC until 2026-08-24. `history_engine` dropped the
+resulting "Sunday" candles — really Mondays — so the performance chart was
+missing a session a week and every Indian date sat one day left of its US
+counterpart on the shared x-axis. Measured on a 1mo window at the time of the
+fix: 16 points and no Fridays before, 21 points and a clean Mon–Fri spread
+after. The weekday filter in `history_engine` is now only a guard.
 
 ## Logins and ownership
 
@@ -181,8 +185,9 @@ when the real move was +₹19,941 (+0.61%). Per stock, per day:
 The percentage divides by the same base those legs were measured from
 (yesterday's close for carried shares, cost for new ones).
 
-Prices come from `stock_detail.fetch_candles` — **not** `history_source`, which
-still reads Groww's epochs as UTC and so dates every Indian session a day early.
+Prices come from `stock_detail.fetch_candles`. This predates the IST fix in
+`history_source`, which was the reason to avoid it; both read Groww in IST now,
+so the two are equivalent on dates and the split is no longer load-bearing.
 
 `portfolio_daily_snapshots` is still written on every portfolio view, because it
 is the only record of what the portfolio was *observed* to be worth, but it is

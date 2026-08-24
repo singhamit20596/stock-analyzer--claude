@@ -91,8 +91,10 @@ def build_history(holdings: List[Dict[str, Any]], range_: str = "3mo",
     # The x-axis is every date on which some holding printed; each series is
     # then forward-filled onto that spine so all four lines align.
     #
-    # Weekends are dropped: Groww emits a Sunday-stamped candle that is not a
-    # real session, and letting it through bends the chart.
+    # Weekends are dropped. This used to be load-bearing, because Groww candles
+    # were read as UTC and every Monday arrived stamped Sunday — the filter then
+    # discarded a real session a week. `history_source` now reads them in IST, so
+    # this is only a guard against a provider emitting a non-session date.
     dates = [d for d in sorted({d for s in priced.values() for d in s})
              if date.fromisoformat(d).weekday() < 5]
     filled = {k: _forward_fill(s, dates) for k, s in priced.items()}

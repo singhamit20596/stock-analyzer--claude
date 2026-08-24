@@ -29,6 +29,12 @@ NASDAQ_HEADERS = {**BROWSER_HEADERS, "Referer": "https://www.nasdaq.com/"}
 
 TIMEOUT = 12.0
 
+# Groww stamps a daily candle at 00:00 IST, which is 18:30 UTC the *previous*
+# day. Read as UTC, every Indian session lands a day early and Monday looks
+# like Sunday, so the session date must be taken in IST. `stock_detail` does
+# the same for its candles.
+IST = timezone(timedelta(hours=5, minutes=30))
+
 # Daily closes only change once a day.
 _CACHE: Dict[Tuple[str, str, int], Dict[str, float]] = {}
 _CACHE_AT: Dict[Tuple[str, str, int], float] = {}
@@ -72,7 +78,7 @@ def _groww_daily(symbol: str, days: int) -> Dict[str, float]:
             # [epoch_seconds, open, high, low, close, volume]
             if len(candle) < 5 or candle[4] in (None, 0):
                 continue
-            day = datetime.fromtimestamp(candle[0], tz=timezone.utc).strftime("%Y-%m-%d")
+            day = datetime.fromtimestamp(candle[0], tz=IST).strftime("%Y-%m-%d")
             series[day] = float(candle[4])
         return _store(key, series)
     except Exception:
