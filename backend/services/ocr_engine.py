@@ -130,7 +130,19 @@ class PortfolioOCREngine:
         holdings = []
         seen_symbols = set()
 
-        # --- Strategy A: INDmoney / Web Desktop Table View (Qty Column Matching) ---
+        # --- Strategy A: INDmoney / Web Desktop Table View ---
+        # The broker prints, per row, two stacked lines:
+        #
+        #   <logo> Company Name    $market   $invested   $current value   +$pnl
+        #          TICKER          chg%      qty Qty | $avg Avg.          pnl%
+        #
+        # Column positions are read off the row itself rather than hard-coded:
+        # the same table is captured at anything from ~840px to ~1600px wide,
+        # and absolute pixel windows silently match nothing at the wrong scale.
+        # Distances are expressed in `unit`, the height of the qty box, which
+        # scales with the capture.
+        money_re = re.compile(r'^\$\s*([\d,]+\.\d{2})$')
+
         qty_boxes = []
         for b in sorted_boxes:
             m = re.search(r'([\d.]+)\s*Qty', b['text'], re.IGNORECASE)
@@ -142,69 +154,116 @@ class PortfolioOCREngine:
                 except ValueError:
                     pass
 
-        if qty_boxes:
-            for qty, qbox in qty_boxes:
-                qy = qbox['y']
-                company_name = ""
-                symbol = ""
+        for qty, qbox in qty_boxes:
+            qy = qbox['y']
+            qx = qbox['min_x']
+            unit = max(qbox['max_y'] - qbox['min_y'], 1.0)
 
-                for candidate in sorted_boxes:
-                    if (qy - 35 <= candidate['y'] <= qy + 5) and candidate['min_x'] < 160:
-                        txt = candidate['text'].strip()
-                        if re.match(r'^[A-Z]{2,6}$', txt) and not any(k in txt.lower() for k in ['stock', 'qty', 'avg', 'current', 'reports']):
-                            symbol = txt
-                        elif re.search(r'[A-Za-z]{3,}', txt) and not any(k in txt.lower() for k in ['stock name', 'qty', 'avg', 'current', 'invested', 'reports']):
-                            company_name = txt
+            def on_row(box, lo, hi):
+                return qy + lo * unit <= box['y'] <= qy + hi * unit
 
-                if not symbol and company_name:
-                    for candidate in sorted_boxes:
-                        if (qy - 5 <= candidate['y'] <= qy + 25) and candidate['min_x'] < 100:
-                            txt = candidate['text'].strip()
-                            if re.match(r'^[A-Z0-9]{2,6}$', txt):
-                                symbol = txt
-                                break
+            # Plain amounts (no +/- sign, which is what marks the P&L column)
+            # sitting on the line above the qty text: market price, invested,
+            # current value.
+            upper = []
+            for b in sorted_boxes:
+                if not on_row(b, -2.2, -0.3):
+                    continue
+                m = money_re.match(b['text'].strip())
+                if m:
+                    upper.append((b, clean_currency(m.group(1))))
+            upper.sort(key=lambda t: t[0]['min_x'])
 
-                if not symbol and company_name:
-                    symbol = normalize_symbol(company_name)
+            # Invested shares a left edge with the qty text underneath it; the
+            # current value is the next amount to its right, the market price
+            # the one to its left.
+            invested = current_value = market_price = 0.0
+            inv_idx = None
+            for i, (b, val) in enumerate(upper):
+                if abs(b['min_x'] - qx) <= 3 * unit:
+                    inv_idx, invested = i, val
+                    break
+            if inv_idx is not None:
+                if inv_idx + 1 < len(upper):
+                    current_value = upper[inv_idx + 1][1]
+                if inv_idx > 0:
+                    market_price = upper[inv_idx - 1][1]
 
-                # Clean company name trailing prices / truncated text
-                if company_name:
-                    company_name = re.sub(r"\s+\$?[\d\.,]+$", "", company_name).strip()
-                    company_name = re.sub(r"\s*Clas\.\.\.$", "", company_name).strip()
-                    company_name = re.sub(r"\s*Class\s*[AB]?$", "", company_name, flags=re.IGNORECASE).strip()
+            name_limit = upper[0][0]['min_x'] if upper else qx - 2 * unit
 
-                avg_price = 0.0
-                avg_m = re.search(r'\$([\d,]+\.?\d*)\s*Avg', qbox['text'], re.IGNORECASE)
-                if avg_m:
-                    avg_price = clean_currency(avg_m.group(1))
-                else:
-                    for candidate in sorted_boxes:
-                        if (qy - 15 <= candidate['y'] <= qy + 15) and (350 <= candidate['min_x'] <= 600):
-                            am = re.search(r'\$([\d,]+\.?\d*)', candidate['text'])
-                            if am:
-                                avg_price = clean_currency(am.group(1))
-                                break
+            company_box = None
+            for b in sorted_boxes:
+                if on_row(b, -2.2, -0.3) and b['min_x'] < name_limit:
+                    txt = b['text'].strip()
+                    if re.search(r'[A-Za-z]{3,}', txt) and not any(
+                            k in txt.lower() for k in
+                            ['stock name', 'qty', 'avg', 'current', 'invested', 'reports']):
+                        company_box = b
+                        break
+            company_name = company_box['text'].strip() if company_box else ""
 
-                ltp = 0.0
-                for candidate in sorted_boxes:
-                    if (qy - 25 <= candidate['y'] <= qy + 10) and (150 <= candidate['min_x'] <= 250):
-                        pm = re.search(r'\$([\d,]+\.?\d*)', candidate['text'])
-                        if pm:
-                            ltp = clean_currency(pm.group(1))
-                            break
+            # The ticker sits on the lower line, left-aligned with the company
+            # name. The row's logo also lands in this band and further left, so
+            # candidates are ranked by how well they line up with the name
+            # rather than taken in reading order — a VISA wordmark must not win
+            # over the "V" underneath it.
+            symbol = ""
+            anchor = company_box['min_x'] if company_box else qx
+            candidates = []
+            for b in sorted_boxes:
+                if on_row(b, -0.3, 2.2) and b['min_x'] < name_limit:
+                    txt = b['text'].strip()
+                    # One character is a real ticker (V, F, C); requiring two
+                    # dropped them onto the company-name fallback.
+                    if re.match(r'^[A-Z][A-Z0-9.\-]{0,5}$', txt) and not any(
+                            k in txt.lower() for k in ['stock', 'qty', 'avg', 'current', 'reports']):
+                        candidates.append(b)
+            if candidates:
+                symbol = min(candidates, key=lambda b: abs(b['min_x'] - anchor))['text'].strip()
 
-                if symbol and symbol not in seen_symbols:
-                    seen_symbols.add(symbol)
-                    # Note: current_price is set to 0.0 when not found in screenshot.
-                    # Live prices are fetched from market API (Yahoo Finance) via "Refresh Live Prices".
-                    # Do NOT fall back to avg_price — that causes wrong P&L calculations.
-                    holdings.append({
-                        "symbol": symbol,
-                        "company_name": company_name or symbol,
-                        "quantity": qty,
-                        "avg_buy_price": avg_price,
-                        "current_price": ltp if ltp > 0 else 0.0
-                    })
+            if not symbol and company_name:
+                symbol = normalize_symbol(company_name)
+
+            # Clean company name trailing prices / truncated text
+            if company_name:
+                company_name = re.sub(r"\s+\$?[\d\.,]+$", "", company_name).strip()
+                company_name = re.sub(r"\s*Clas\.\.\.$", "", company_name).strip()
+                company_name = re.sub(r"\s*Class\s*[AB]?$", "", company_name, flags=re.IGNORECASE).strip()
+
+            # Two full decimals are required: OCR splits "$280.91 Avg." often
+            # enough that a looser pattern happily returned "$280", which was
+            # then stored as a cost basis of 280.00.
+            avg_price = 0.0
+            for b in [qbox] + sorted_boxes:
+                if b is not qbox and not on_row(b, -0.8, 0.8):
+                    continue
+                am = re.search(r'\$\s*([\d,]+\.\d{2})\s*Avg', b['text'], re.IGNORECASE)
+                if am:
+                    avg_price = clean_currency(am.group(1))
+                    break
+
+            # The broker prints Invested and Current value, so neither the cost
+            # basis nor the price has to be trusted to OCR alone: both are
+            # recoverable by division, and disagreement means the read is wrong.
+            if invested > 0 and qty > 0:
+                derived_avg = round(invested / qty, 2)
+                if avg_price <= 0 or abs(avg_price - derived_avg) > max(0.01 * derived_avg, 0.01):
+                    avg_price = derived_avg
+
+            ltp = round(current_value / qty, 2) if (current_value > 0 and qty > 0) else market_price
+
+            if symbol and symbol not in seen_symbols:
+                seen_symbols.add(symbol)
+                # current_price is left at 0.0 when the screenshot does not
+                # yield one; the live quote fills it in later. Never fall back
+                # to avg_price, which would report zero P&L as fact.
+                holdings.append({
+                    "symbol": symbol,
+                    "company_name": company_name or symbol,
+                    "quantity": qty,
+                    "avg_buy_price": avg_price,
+                    "current_price": ltp if ltp > 0 else 0.0
+                })
 
         # --- Strategy B: Groww Desktop Table Single-Line Matching ---
         if not holdings:

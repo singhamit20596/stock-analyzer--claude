@@ -40,7 +40,12 @@ class AccountDeduplicator:
                 )
 
                 existing_map[norm_sym]["quantity"] = new_h["quantity"]
-                existing_map[norm_sym]["avg_buy_price"] = new_h["avg_buy_price"]
+                # A zero here means the screenshot did not yield the number,
+                # never that the cost basis is zero, so the stored figure has
+                # to stand — same reasoning as current_price on the next line.
+                # Without this guard a partial read silently wipes out a real
+                # cost basis and the position reports 100% profit.
+                existing_map[norm_sym]["avg_buy_price"] = new_h["avg_buy_price"] or curr_h.get("avg_buy_price", 0.0)
                 existing_map[norm_sym]["current_price"] = new_h["current_price"] or curr_h.get("current_price", 0.0)
                 if new_h.get("company_name"):
                     existing_map[norm_sym]["company_name"] = new_h["company_name"]
