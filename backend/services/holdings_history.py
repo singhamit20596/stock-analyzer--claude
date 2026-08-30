@@ -160,6 +160,56 @@ def recent_changes(db, account_ids: List[str], limit: int = 100) -> List[Dict[st
     return [_event_payload(r) for r in rows]
 
 
+def flow_events(db, account_ids: List[str]) -> List[Dict[str, Any]]:
+    """Capital moved in or out of the portfolio, per day and stock.
+
+    The performance chart has to tell a deposit apart from a gain: buying a
+    stock raises what the portfolio is worth without earning a rupee of it.
+    What is returned is the raw material for that — quantity and cost-basis
+    deltas — leaving `history_engine` to price and convert them, since only it
+    knows that day's close and USD/INR rate.
+
+    Two rows in this log look like flows and are not:
+
+      * `REPRICED` moves no shares. It records a corrected average, usually
+        because OCR re-read the screenshot differently, and treating that as
+        cash would invent a flow out of a rounding difference.
+      * `OPENING` is not a purchase. The position already existed and the app
+        had merely not been recording it, which is also why `QuantityReader`
+        carries it backwards rather than reading zero before it.
+    """
+    if not account_ids:
+        return []
+
+    merged: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+    events = (db.query(models.HoldingChange)
+              .filter(models.HoldingChange.account_id.in_(account_ids))
+              .order_by(models.HoldingChange.changed_at).all())
+
+    for event in events:
+        if event.change_type == OPENING:
+            continue
+        before = event.quantity_before or 0.0
+        after = event.quantity_after or 0.0
+        delta = after - before
+        if abs(delta) <= QUANTITY_EPSILON:
+            continue
+
+        day = _as_date(event.changed_at)
+        key = (day, event.symbol.strip().upper(), (event.country or "IND").upper())
+        row = merged.setdefault(key, {
+            "day": day, "symbol": key[1], "country": key[2],
+            "quantity_delta": 0.0, "cost_delta": 0.0,
+        })
+        row["quantity_delta"] += delta
+        # The rise in cost basis is exactly the cash put in, which is the one
+        # thing an average-cost snapshot can still answer honestly.
+        row["cost_delta"] += (after * (event.avg_price_after or 0.0)
+                              - before * (event.avg_price_before or 0.0))
+
+    return sorted(merged.values(), key=lambda r: (r["day"], r["symbol"]))
+
+
 # ── reading quantities back out of the log ───────────────────────────────────
 
 def _as_date(value) -> str:
