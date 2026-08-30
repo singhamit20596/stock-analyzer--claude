@@ -1117,15 +1117,17 @@ def delete_watch_stock(symbol: str, country: str = "IND", db: Session = Depends(
 def get_portfolio_history(portfolio_id: str, range: str = "3mo",
                           db: Session = Depends(get_db),
                           view: Viewer = Depends(viewer)):
-    """Portfolio value over time against Nifty 50, Nasdaq and the S&P 500.
+    """Portfolio performance over time against Nifty 50, Nasdaq and the S&P 500.
 
-    Reconstructed from current quantities priced at each day's close — see
+    The line is chain-linked with the day's capital flows removed, so a
+    purchase changes the portfolio's size without registering as a gain — see
     history_engine for what that does and does not represent.
     """
     portfolio = _portfolio_or_404(db, view, portfolio_id)
     result = history_engine.build_history(
         _holding_rows_for_history(db, portfolio), range,
-        quantity_at=_quantity_reader(db, portfolio).at)
+        quantity_at=_quantity_reader(db, portfolio).at,
+        flows=holdings_history.flow_events(db, _account_ids_of(portfolio)))
     result["portfolio_id"] = portfolio_id
     result["portfolio_name"] = portfolio.name
     return result
@@ -1187,10 +1189,13 @@ def _positions_for_pnl(db: Session, portfolio) -> List[Dict[str, Any]]:
     ]
 
 
+def _account_ids_of(portfolio) -> List[str]:
+    return [link.account.id for link in portfolio.account_links if link.account]
+
+
 def _quantity_reader(db: Session, portfolio) -> holdings_history.QuantityReader:
     """Replays the change log for this portfolio's accounts."""
-    account_ids = [link.account.id for link in portfolio.account_links if link.account]
-    return holdings_history.quantity_reader(db, account_ids)
+    return holdings_history.quantity_reader(db, _account_ids_of(portfolio))
 
 
 def _holding_rows_for_history(db: Session, portfolio) -> List[Dict[str, Any]]:

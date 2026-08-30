@@ -108,6 +108,49 @@ starting empty.
 `migrations.py` runs after `create_all` on every start, because `create_all`
 adds missing tables but never alters existing ones.
 
+## Reading a holdings screenshot
+
+`ocr_engine` Strategy A reads the INDmoney desktop table, whose row is two
+stacked lines: name / market price / invested / current value / P&L on top,
+ticker / change% / `qty Qty | $avg Avg.` underneath.
+
+**Column positions are derived from the row, never hard-coded.** The same table
+gets captured anywhere from ~840px to ~1600px wide. Absolute pixel windows
+matched nothing at the wrong scale and failed *silently*: on a 1600px capture
+the market-price window and the avg-price fallback both came up empty, so every
+`current_price` was 0 and two of five cost bases were 0. Distances are in
+`unit`, the height of the qty box, which scales with the capture.
+
+**The broker prints Invested and Current value, so neither the cost basis nor
+the price has to be trusted to OCR alone.** `avg = invested / qty` and
+`price = current value / qty`, and a parsed avg that disagrees by more than 1%
+is discarded. This is what catches a truncated read: RapidOCR splits
+`"$280.91 Avg."` across two boxes often enough that a loose pattern returned
+`$280`, which was then stored as a cost basis of 280.00. The avg pattern now
+requires two decimals.
+
+**A one-character ticker is a real ticker.** `V`, `F`, `C`. Requiring two
+characters dropped VISA Inc. onto the company-name fallback and stored it as
+`VISA`; the same path turned VOO into `VANGUARDSP`, which resolves no quote at
+any provider, so the position was priced at cost and showed exactly zero P&L.
+The row's logo also lands in the ticker band and further left, so candidates are
+ranked by alignment with the company name rather than taken in reading order.
+
+**An import is a whole-account snapshot, and a screenshot usually is not.**
+`verify-save-holdings?strategy=OVERWRITE` deletes every holding not in the
+upload. A long table takes several screenshots, and saving them one at a time
+under OVERWRITE deletes the rest of the account each time — on 2026-08-28 this
+removed 23 of Ankit's positions, reset `first_seen_at` on the rows that later
+came back, and silently dropped a user-set section (TEM's `Satellite`). The
+modal defaults to MERGE for that reason. `/api/upload-ocr-images` accepts a list
+of files and unions them, so the correct way to OVERWRITE is to upload every
+page in one go.
+
+**A zero from OCR means "not read", never "zero".** `deduplicator` guards both
+`avg_buy_price` and `current_price` against being overwritten by one; the guard
+was missing on avg and a partial read wiped real cost bases (`AMZN 227.35 ->
+0.0`), which reports the position as 100% profit.
+
 ## Holding history
 
 `holding_changes` is what lets the performance chart value each past day with

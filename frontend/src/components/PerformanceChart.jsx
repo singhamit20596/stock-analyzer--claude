@@ -113,7 +113,8 @@ export default function PerformanceChart({ portfolioId }) {
             Performance vs Benchmarks
           </h3>
           <p className="text-[10px] text-slate-500 mt-0.5">
-            All lines rebased to 100 at {shortDate(dates[0])}. Portfolio valued in ₹ at each day's close.
+            All lines rebased to 100 at {shortDate(dates[0])}. Buying and selling is netted out,
+            so the portfolio line shows return only — never money moving in. Value in ₹ shown below.
           </p>
         </div>
         <div className="flex gap-1 shrink-0">

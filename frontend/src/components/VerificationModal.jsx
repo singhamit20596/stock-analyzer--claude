@@ -4,7 +4,10 @@ import { CheckCircle2, Trash2, Plus, X } from 'lucide-react';
 export default function VerificationModal({ accounts, initialHoldings, targetAccountId, onClose, onSave }) {
   const [holdings, setHoldings] = useState(initialHoldings || []);
   const [selectedAccountId, setSelectedAccountId] = useState(targetAccountId || (accounts && accounts[0]?.id) || '');
-  const [strategy, setStrategy] = useState('OVERWRITE');
+  // MERGE, not OVERWRITE: a long holdings table takes several screenshots to
+  // capture, and OVERWRITE treats whichever page was uploaded as the entire
+  // account, deleting every position that did not fit in it.
+  const [strategy, setStrategy] = useState('MERGE');
 
   // Keep state synchronized whenever initialHoldings or targetAccountId props update
   useEffect(() => {
@@ -94,9 +97,16 @@ export default function VerificationModal({ accounts, initialHoldings, targetAcc
               onChange={(e) => setStrategy(e.target.value)}
               className="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-indigo-500 font-medium"
             >
-              <option value="OVERWRITE">OVERWRITE (Replace Account Holdings)</option>
-              <option value="MERGE">MERGE (Smart Weighted Avg Cost Price)</option>
+              <option value="MERGE">MERGE (update these rows, keep the rest)</option>
+              <option value="OVERWRITE">OVERWRITE (this upload is the whole account)</option>
             </select>
+            {strategy === 'OVERWRITE' && (
+              <p className="mt-2 text-[11px] leading-snug text-amber-400 font-medium">
+                Removes every holding in this account that is not among the {holdings.length} rows
+                below. Only correct if these screenshots cover the entire table — upload all
+                the pages together, not one at a time.
+              </p>
+            )}
           </div>
 
           <div>

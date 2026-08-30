@@ -9,6 +9,7 @@ Two distinct lookups live here:
 """
 
 import re
+from typing import Dict
 
 # Company name (as it appears in broker UIs) -> US ticker.
 US_COMPANY_NAMES = {
@@ -54,6 +55,31 @@ INDIAN_COMPANY_NAMES = {
     "DCB BANK": "DCBBANK",
     "DCBBANK": "DCBBANK",
     "GLOBAL HEALTH": "MEDANTA",
+    # Every Groww fund is named "Groww Nifty <something>", and an unknown name
+    # falls back to the first ten characters of its slug — which spells
+    # GROWWNIFTY, a real NSE ticker for the Groww Nifty 50 ETF. So an unlisted
+    # Groww fund does not fail to resolve, it resolves to a *different* fund,
+    # and nothing downstream can tell: the defence ETF was priced at ₹9.74
+    # against ₹97.44. The whole family is therefore enumerated, codes taken
+    # from Groww's own search and each checked against a live quote.
+    #
+    # Keys stop short of the full names on purpose: brokers truncate the column
+    # ("Groww Nifty India Defenc..."), and matching is a substring test, so a
+    # key longer than the truncation would never match. Longest key wins, which
+    # is what keeps "Groww Nifty 500 Momentum" off the plain "Groww Nifty 50".
+    "GROWW BSE POWER": "GROWWPOWER",
+    "GROWW GOLD": "GROWWGOLD",
+    "GROWW NIFTY 50": "GROWWNIFTY",
+    "GROWW NIFTY 500 MOMEN": "GROWWMOM50",
+    "GROWW NIFTY CEMENT": "CEMNTGROWW",
+    "GROWW NIFTY EV": "GROWWEV",
+    "GROWW NIFTY INDIA DEF": "GROWWDEFNC",
+    "GROWW NIFTY INDIA INT": "GROWWNET",
+    "GROWW NIFTY INDIA RAIL": "GROWWRAIL",
+    "GROWW NIFTY METAL": "GROWWMETAL",
+    "GROWW NIFTY PRIVATE BAN": "PVTBKGROWW",
+    "GROWW NIFTY SMALLCAP": "GROWWSC250",
+    "GROWW SILVER": "GROWWSLVR",
     "HDFC BANK": "HDFCBANK",
     "HERO MOTOCORP": "HEROMOTOCO",
     "HINDUSTAN UNILEVER": "HINDUNILVR",
@@ -109,6 +135,27 @@ _SQUASHED_NAME_KEYS = sorted(
     reverse=True,
 )
 
+# A short key is a substring of too many unrelated names: "META" sits inside
+# "Groww Nifty Metal ETF", which resolved a metal fund to Meta Platforms, and
+# "SBI" and "ITC" carry the same hazard. Longest-key-first ordering does not
+# help when the short key is the only one that matches at all.
+#
+# Short keys therefore have to earn the match: either the name *begins* with
+# them, or they appear as a whole word. Both are needed — the first catches
+# "METAPlatforms" where OCR dropped the space, the second "Meta Platforms Inc"
+# where it did not, and neither accepts "Metal".
+_SHORT_KEY = 5
+_WORD_CACHE: Dict[str, "re.Pattern[str]"] = {}
+
+
+def _short_key_matches(key: str, squashed: str, text: str) -> bool:
+    if squashed.startswith(key):
+        return True
+    pattern = _WORD_CACHE.get(key)
+    if pattern is None:
+        pattern = _WORD_CACHE[key] = re.compile(rf"\b{re.escape(key)}\b")
+    return bool(pattern.search(text))
+
 # Tickers that a broker or an earlier OCR run may have stored in a truncated or
 # non-canonical form -> the symbol NSE (and therefore the quote APIs) expects.
 TICKER_ALIASES = {
@@ -140,6 +187,9 @@ ETF_SYMBOLS = {
     "VOO", "QQQM", "SOXX", "IGV",
     # India
     "ITBEES", "NIFTYIETF", "BANKBEES",
+    "GROWWPOWER", "GROWWGOLD", "GROWWNIFTY", "GROWWMOM50", "CEMNTGROWW",
+    "GROWWEV", "GROWWDEFNC", "GROWWNET", "GROWWRAIL", "GROWWMETAL",
+    "PVTBKGROWW", "GROWWSC250", "GROWWSLVR",
 }
 
 
@@ -190,7 +240,10 @@ def normalize_symbol(name_str: str) -> str:
     def match(text: str) -> str:
         squashed = _SQUASH.sub("", text)
         for key, symbol in _SQUASHED_NAME_KEYS:
-            if key in squashed:
+            if len(key) <= _SHORT_KEY:
+                if _short_key_matches(key, squashed, text):
+                    return symbol
+            elif key in squashed:
                 return symbol
         return ""
 
