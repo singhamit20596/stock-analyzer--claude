@@ -10,6 +10,7 @@ import SyncLogsView from './components/SyncLogsView';
 import ClassificationView from './components/ClassificationView';
 import VerificationModal from './components/VerificationModal';
 import StockDetailPage from './components/stock/StockDetailPage';
+import StockChartPopup from './components/stock/StockChartPopup';
 import useStockRoute from './components/stock/useStockRoute';
 import LoginView from './components/LoginView';
 import * as auth from './auth';
@@ -21,7 +22,7 @@ export default function App() {
   const [user, setUser] = useState(undefined);
   const [viewAs, setViewAsState] = useState(() => auth.getViewAs());
   // The open stock lives in the URL so the browser Back button closes it.
-  const { stock, open: openStock, close: closeStock } = useStockRoute();
+  const { stock, open: openStock, expand: expandStock, close: closeStock } = useStockRoute();
   // A question handed over from a stock page, waiting for the chat to pick up.
   const [chatPrompt, setChatPrompt] = useState('');
 
@@ -272,7 +273,19 @@ export default function App() {
         />
       )}
 
-      {stock && (
+      {/* A holding opens its chart over the page; "Full details" swaps that for
+          the deep-dive, and Back retraces the same two steps. */}
+      {stock && stock.view === 'chart' && (
+        <StockChartPopup
+          key={`${stock.symbol}:${stock.country}`}
+          symbol={stock.symbol}
+          country={stock.country}
+          onClose={closeStock}
+          onExpand={expandStock}
+        />
+      )}
+
+      {stock && stock.view === 'full' && (
         <StockDetailPage
           key={`${stock.symbol}:${stock.country}`}
           symbol={stock.symbol}
