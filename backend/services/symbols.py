@@ -54,6 +54,17 @@ INDIAN_COMPANY_NAMES = {
     "DCB BANK": "DCBBANK",
     "DCBBANK": "DCBBANK",
     "GLOBAL HEALTH": "MEDANTA",
+    # Every Groww fund is named "Groww Nifty <something>", and an unknown name
+    # falls back to the first ten characters of its slug — which spells
+    # GROWWNIFTY, a real NSE ticker for the Groww Nifty 50 ETF. So the defence
+    # fund did not fail to resolve, it resolved to a different fund trading at
+    # a tenth of the price, and nothing downstream could tell. Any further
+    # Groww ETF needs its own entry here for the same reason.
+    #
+    # The key stops short of the full name on purpose: brokers truncate the
+    # column ("Groww Nifty India Defenc..."), and matching is a substring test,
+    # so a key longer than the truncation would never match.
+    "GROWW NIFTY INDIA DEF": "GROWWDEFNC",
     "HDFC BANK": "HDFCBANK",
     "HERO MOTOCORP": "HEROMOTOCO",
     "HINDUSTAN UNILEVER": "HINDUNILVR",
@@ -139,7 +150,7 @@ ETF_SYMBOLS = {
     # US
     "VOO", "QQQM", "SOXX", "IGV",
     # India
-    "ITBEES", "NIFTYIETF", "BANKBEES",
+    "ITBEES", "NIFTYIETF", "BANKBEES", "GROWWDEFNC",
 }
 
 
