@@ -1,13 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle2, Trash2, Plus, X } from 'lucide-react';
 
-export default function VerificationModal({ accounts, initialHoldings, targetAccountId, onClose, onSave }) {
+export default function VerificationModal({ accounts, initialHoldings, marketGuesses, targetAccountId, onClose, onSave }) {
   const [holdings, setHoldings] = useState(initialHoldings || []);
   const [selectedAccountId, setSelectedAccountId] = useState(targetAccountId || (accounts && accounts[0]?.id) || '');
   // MERGE, not OVERWRITE: a long holdings table takes several screenshots to
   // capture, and OVERWRITE treats whichever page was uploaded as the entire
   // account, deleting every position that did not fit in it.
   const [strategy, setStrategy] = useState('MERGE');
+  // What the account already holds, so the rows *missing* from this upload can
+  // be shown. MERGE silently keeps them, which is right for a screenshot that
+  // is only one page of the table and wrong for a position that was sold —
+  // and nothing in the UI used to distinguish the two.
+  const [existing, setExisting] = useState([]);
+  const [removeSymbols, setRemoveSymbols] = useState([]);
 
   // Keep state synchronized whenever initialHoldings or targetAccountId props update
   useEffect(() => {
@@ -20,7 +26,44 @@ export default function VerificationModal({ accounts, initialHoldings, targetAcc
     }
   }, [targetAccountId]);
 
+  useEffect(() => {
+    if (!selectedAccountId) { setExisting([]); return undefined; }
+    let live = true;
+    setRemoveSymbols([]);
+    fetch(`/api/accounts/${selectedAccountId}/detail`)
+      .then((res) => (res.ok ? res.json() : Promise.reject(res)))
+      .then((body) => { if (live) setExisting(body.items || []); })
+      .catch(() => { if (live) setExisting([]); });
+    return () => { live = false; };
+  }, [selectedAccountId]);
+
   const targetAccount = (accounts || []).find(a => a.id === selectedAccountId);
+
+  const uploaded = new Set(
+    holdings.map((h) => String(h.symbol || '').trim().toUpperCase()));
+  // OVERWRITE already drops everything absent, so the choice only applies to MERGE.
+  const missing = strategy === 'MERGE'
+    ? existing.filter((h) => !uploaded.has(String(h.symbol || '').trim().toUpperCase()))
+    : [];
+
+  // A screenshot cannot say which account it came from, so saving a US
+  // statement to an INR account is accepted in full and every row is stamped
+  // INR. That is how nine of Preeti's US positions ended up in her Indian
+  // account, priced as rupees. The mismatch is only ever flagged, never
+  // blocked — the guess is a heuristic and the user knows their own accounts.
+  const wantMarket = targetAccount?.currency_type === 'US' ? 'US' : 'IND';
+  const mismatched = holdings.filter((h) => {
+    const guess = (marketGuesses || {})[String(h.symbol || '').trim().toUpperCase()];
+    return guess && guess !== wantMarket;
+  });
+  const mostlyWrongMarket = holdings.length > 0
+    && mismatched.length >= Math.max(2, Math.ceil(holdings.length / 2));
+
+  const toggleRemove = (symbol) => {
+    setRemoveSymbols((current) => (current.includes(symbol)
+      ? current.filter((s) => s !== symbol)
+      : [...current, symbol]));
+  };
 
   const handleRowChange = (index, field, value) => {
     const updated = [...holdings];
@@ -45,7 +88,7 @@ export default function VerificationModal({ accounts, initialHoldings, targetAcc
       alert("Please select a target Broker Account to save these extracted holdings to.");
       return;
     }
-    onSave(holdings, selectedAccountId, strategy);
+    onSave(holdings, selectedAccountId, strategy, removeSymbols);
   };
 
   const totalExtractedValue = holdings.reduce((sum, item) => sum + (item.quantity * item.avg_buy_price), 0);
@@ -116,6 +159,68 @@ export default function VerificationModal({ accounts, initialHoldings, targetAcc
             </div>
           </div>
         </div>
+
+        {mostlyWrongMarket && (
+          <div className="px-6 pt-4">
+            <div className="rounded-xl border border-rose-500/40 bg-rose-500/10 p-3">
+              <p className="text-[11px] font-bold text-rose-300">
+                These look like {mismatched[0] && (marketGuesses[String(mismatched[0].symbol).trim().toUpperCase()] === 'US')
+                  ? 'US' : 'Indian'} tickers, but
+                {' '}<span className="underline">{targetAccount?.name}</span> is
+                {' '}{wantMarket === 'US' ? 'a US ($)' : 'an Indian (₹)'} account.
+              </p>
+              <p className="text-[10px] text-slate-300 mt-1">
+                {mismatched.length} of {holdings.length} rows: {mismatched.slice(0, 8).map(h => h.symbol).join(', ')}
+                {mismatched.length > 8 ? '…' : ''}. Saving here stamps them
+                {' '}{wantMarket === 'US' ? 'USD' : 'INR'}, so prices and P&L will be wrong.
+                Pick the right account above if this is the wrong one.
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Held now but absent from this upload. MERGE keeps these, which is
+            correct for one page of a longer table and wrong for a sale, so the
+            choice is put in front of the user rather than assumed. */}
+        {missing.length > 0 && (
+          <div className="px-6 pt-4">
+            <div className="rounded-xl border border-amber-500/30 bg-amber-500/5 p-3">
+              <p className="text-[11px] font-bold text-amber-300 mb-1">
+                {missing.length} holding{missing.length > 1 ? 's' : ''} in this account
+                {' '}{missing.length > 1 ? 'are' : 'is'} not in this upload
+              </p>
+              <p className="text-[10px] text-slate-400 mb-2">
+                They stay untouched unless you tick them — right if this is one page of a
+                longer table, wrong if you have sold them.
+              </p>
+              <div className="flex flex-wrap gap-1.5">
+                {missing.map((h) => {
+                  const picked = removeSymbols.includes(h.symbol);
+                  return (
+                    <button
+                      key={h.symbol}
+                      onClick={() => toggleRemove(h.symbol)}
+                      className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[11px] font-semibold
+                        transition-colors ${picked
+                          ? 'bg-rose-600/20 border-rose-500/60 text-rose-300 line-through'
+                          : 'bg-slate-900/70 border-slate-700 text-slate-300 hover:border-slate-500'}`}
+                      title={picked ? 'Will be removed' : 'Click if this holding was sold'}
+                    >
+                      {picked ? <Trash2 className="w-3 h-3" /> : <Plus className="w-3 h-3 rotate-45" />}
+                      {h.symbol}
+                      <span className="text-slate-500 font-normal">{h.quantity}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              {removeSymbols.length > 0 && (
+                <p className="text-[10px] text-rose-300 mt-2 font-semibold">
+                  {removeSymbols.length} will be removed and logged as sold.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Editable Holdings Table */}
         <div className="p-6 flex-1 overflow-y-auto">

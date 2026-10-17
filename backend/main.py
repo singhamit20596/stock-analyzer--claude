@@ -547,9 +547,21 @@ async def upload_ocr_images(
             "warnings": ["No stock holdings detected in the uploaded screenshot(s)."],
         }
 
+    holdings = AccountDeduplicator.deduplicate_holdings(parsed_holdings)
     return {
         "account_id": account_id,
-        "holdings": AccountDeduplicator.deduplicate_holdings(parsed_holdings),
+        "holdings": holdings,
+        # Which market each ticker looks like it belongs to. The screenshot
+        # cannot say which account it came from, so a US statement saved to an
+        # INR account is accepted in full and stamped INR — nine of Preeti's US
+        # positions sat in her Indian account for three days that way, priced
+        # as rupees and inflating the Indian portfolio. Reported separately
+        # from the holdings so the save payload keeps its shape.
+        "market_guesses": {
+            (h.get("symbol") or "").strip().upper():
+                guess_market(h.get("symbol") or "")
+            for h in holdings if h.get("symbol")
+        },
         "warnings": [],
     }
 
@@ -585,6 +597,19 @@ def verify_and_save_holdings(
         incoming_holdings=[h.dict() for h in request.holdings],
         strategy=strategy,
     )
+
+    # A MERGE can only add or update, so a position sold at the broker would
+    # otherwise survive every future import — it is simply absent from the
+    # screenshot, and absence is what MERGE is built to ignore. Dropping the
+    # symbols the user ticked lets `apply_import` see them go and log a
+    # REMOVED, without OVERWRITE's habit of taking every other holding that
+    # did not fit in the upload along with them.
+    dropped = {s.strip().upper() for s in (request.remove_symbols or []) if s and s.strip()}
+    if dropped:
+        kept = [h for h in final_holdings if (h.get("symbol") or "").strip().upper() not in dropped]
+        for symbol in sorted(dropped):
+            warnings.append(f"Removed '{symbol}' — confirmed no longer held.")
+        final_holdings = kept
 
     # Applied as a diff, not a replacement: rows that did not move keep their
     # id, their classification and their first_seen_at, and everything that did
