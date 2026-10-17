@@ -166,6 +166,7 @@ export default function App() {
       setVerificationModal({
         isOpen: true,
         parsedHoldings: result.holdings,
+        marketGuesses: result.market_guesses || {},
         targetAccountId: accountId,
       });
     } catch (e) {
@@ -173,15 +174,19 @@ export default function App() {
     }
   };
 
-  const handleSaveVerifiedHoldings = async (verifiedHoldings, targetAccId, strategy) => {
+  const handleSaveVerifiedHoldings = async (verifiedHoldings, targetAccId, strategy, removeSymbols = []) => {
     try {
       const res = await fetch(`/api/verify-save-holdings?strategy=${strategy}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account_id: targetAccId, holdings: verifiedHoldings }),
+        body: JSON.stringify({
+          account_id: targetAccId,
+          holdings: verifiedHoldings,
+          remove_symbols: removeSymbols,
+        }),
       });
       if (res.ok) {
-        setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null });
+        setVerificationModal({ isOpen: false, parsedHoldings: [], marketGuesses: {}, targetAccountId: null });
         await fetchAccounts();
       }
     } catch (e) {
@@ -267,8 +272,9 @@ export default function App() {
         <VerificationModal
           accounts={accounts}
           initialHoldings={verificationModal.parsedHoldings}
+          marketGuesses={verificationModal.marketGuesses}
           targetAccountId={verificationModal.targetAccountId}
-          onClose={() => setVerificationModal({ isOpen: false, parsedHoldings: [], targetAccountId: null })}
+          onClose={() => setVerificationModal({ isOpen: false, parsedHoldings: [], marketGuesses: {}, targetAccountId: null })}
           onSave={handleSaveVerifiedHoldings}
         />
       )}

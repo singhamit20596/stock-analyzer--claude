@@ -48,6 +48,11 @@ class VerifySaveRequest(BaseModel):
     """OCR-parsed holdings, after the user has reviewed them in the UI."""
     account_id: str
     holdings: List[HoldingBase]
+    # Positions the user confirmed are gone from the broker. MERGE can only
+    # add or update, so without this a sold holding survives every future
+    # import; OVERWRITE would drop it but takes everything else absent from
+    # the upload with it, which is not the same question.
+    remove_symbols: Optional[List[str]] = None
 
 
 class TargetPortfolioCreate(BaseModel):

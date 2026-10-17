@@ -148,6 +148,28 @@ _SHORT_KEY = 5
 _WORD_CACHE: Dict[str, "re.Pattern[str]"] = {}
 
 
+# Brokers cut the name column to whatever fits, and the width varies: the same
+# fund arrived as "Groww Nifty India Defenc..." from one screenshot and
+# "Groww Nifty India D.." from the next. A key long enough to be specific is
+# then longer than the text, and the substring test above can never match.
+#
+# Truncation is not noise, though — it is a prefix. So when the name is visibly
+# cut short, the test runs the other way round: the text has to be the start of
+# a key. Only an unambiguous answer counts; "Groww Nifty India ..." fits the
+# defence, internet and railways funds alike, and guessing between them would
+# be how the wrong fund gets priced in the first place.
+_TRUNCATED = re.compile(r"(?:\.\.+|…)\s*$")
+_MIN_TRUNCATED_STEM = 6
+
+
+def _match_truncated(text: str) -> str:
+    stem = _SQUASH.sub("", text)
+    if len(stem) < _MIN_TRUNCATED_STEM:
+        return ""
+    symbols = {symbol for key, symbol in _SQUASHED_NAME_KEYS if key.startswith(stem)}
+    return symbols.pop() if len(symbols) == 1 else ""
+
+
 def _short_key_matches(key: str, squashed: str, text: str) -> bool:
     if squashed.startswith(key):
         return True
@@ -191,6 +213,12 @@ ETF_SYMBOLS = {
     "GROWWEV", "GROWWDEFNC", "GROWWNET", "GROWWRAIL", "GROWWMETAL",
     "PVTBKGROWW", "GROWWSC250", "GROWWSLVR",
 }
+
+
+# Every ticker this module knows about, in either direction.
+_KNOWN_SYMBOLS = (set(COMPANY_NAME_TO_SYMBOL.values())
+                  | set(TICKER_ALIASES.keys()) | set(TICKER_ALIASES.values())
+                  | ETF_SYMBOLS)
 
 
 def is_etf(symbol: str) -> bool:
@@ -257,5 +285,25 @@ def normalize_symbol(name_str: str) -> str:
     if found:
         return found
 
+    # Nothing contained a key, so try the case where the name is shorter than
+    # one because the broker cut it off.
+    if _TRUNCATED.search(cleaned):
+        found = _match_truncated(cleaned)
+        if found:
+            return found
+
     slug = _SQUASH.sub("", stripped)
-    return slug[:10] if slug else "STOCK"
+    if not slug:
+        return "STOCK"
+
+    # The last resort is the first ten characters of the name. For a truncated
+    # name that is a guess built on incomplete text, and if the guess happens
+    # to spell a ticker belonging to something else it is the worst possible
+    # outcome: it resolves, prices, charts and reports as the wrong instrument
+    # with nothing downstream able to tell. "Groww Nifty India ..." spells
+    # GROWWNIFTY, the Nifty 50 ETF, which priced a defence fund at a tenth of
+    # its value. Keeping more of the name gives a symbol that resolves nowhere
+    # — a visible failure instead of a silent lie.
+    if _TRUNCATED.search(cleaned) and slug[:10] in _KNOWN_SYMBOLS:
+        return slug[:16]
+    return slug[:10]
