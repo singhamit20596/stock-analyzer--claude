@@ -1,0 +1,22 @@
+{
+  "name": "stocks-analyzer-cloud",
+  "private": true,
+  "type": "module",
+  "description": "Read-only cloud API for Stocks Analyzer. The laptop app in backend/ remains the source of truth.",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "tsx --test cloud/test/*.test.ts"
+  },
+  "dependencies": {
+    "@netlify/blobs": "11.1.7",
+    "@netlify/database": "2.0.1",
+    "@netlify/functions": "6.0.3"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "0.5.12",
+    "@electric-sql/pglite-socket": "0.2.15",
+    "tsx": "4.23.15"
+  }
+}

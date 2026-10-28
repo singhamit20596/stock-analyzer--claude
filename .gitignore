@@ -22,3 +22,7 @@ frontend/node_modules/
 # Logs
 *.log
 backend/screenshots/
+
+# Cloud build (netlify/, cloud/)
+/node_modules/
+.netlify/

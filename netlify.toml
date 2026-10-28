@@ -1,0 +1,23 @@
+# The cloud deploy: a read-only website over data the laptop publishes.
+#
+# The laptop app (backend/, started by start.command) is the source of truth
+# and the only place anything is written — imports, OCR, edits. Every change it
+# makes is mirrored into Netlify Database. This site reads that mirror and
+# fetches live prices itself, so it stays current with the laptop switched off.
+# See CLOUD.md.
+
+[build]
+  base = "/"
+  command = "cd frontend && npm ci && npm run build"
+  publish = "frontend/dist"
+
+[build.environment]
+  # @netlify/database needs Node 22.12+; the laptop's Node 20 never builds this.
+  NODE_VERSION = "22"
+  # The frontend hides import and edit controls when this is set. The cloud API
+  # also refuses every write, so this is presentation, not the safeguard.
+  VITE_READ_ONLY = "1"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
