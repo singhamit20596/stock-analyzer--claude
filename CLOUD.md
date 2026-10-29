@@ -68,6 +68,8 @@ Work in the `~/stocks-analyzer-netlify` worktree, outside iCloud Drive.
 - [x] Providers answer Netlify's servers (all but Tickertape, which only adds
       company descriptions on Indian stock pages)
 - [x] Encrypted publisher, tested end to end against a local git remote
-- [ ] Cloud auth: same password hashes, registration closed, rate-limited login
+- [x] Website login: same passwords as the laptop, registration closed, 10 failed
+      attempts per username per 15 min, signed 30-day sessions that end when the
+      password changes on the laptop (cloud/lib/auth.ts)
 - [ ] Read API ported to TypeScript, diff-tested against the Python
 - [ ] Read-only frontend build
