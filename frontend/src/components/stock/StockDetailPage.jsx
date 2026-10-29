@@ -161,7 +161,7 @@ export default function StockDetailPage({ symbol, country, portfolioId, onClose,
 
           <TechnicalIndicators technicals={detail.technicals} currency={detail.currency} />
 
-          <AskAssistantButton detail={detail} onAsk={onAskAssistant} />
+          {onAskAssistant && <AskAssistantButton detail={detail} onAsk={onAskAssistant} />}
 
           {detail.company?.description && (
             <section className="glass-panel rounded-2xl border border-slate-800 p-5">

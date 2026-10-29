@@ -84,7 +84,8 @@ Work in the `~/stocks-analyzer-netlify` worktree, outside iCloud Drive.
       provider data: 89/89 endpoints identical (every held stock, ETFs, a
       stock not held, target tracking, every range). Live fundamentals match
       the laptop on 138/138 calls apart from intraday volume/high-low/market cap.
-- [ ] Hide import/edit controls in the website build (VITE_READ_ONLY); the API
+- [x] Website build hides import/edit controls, the Assistant and Account
+      Management tabs, and news (frontend/src/readOnly.js); the API
       already refuses every write.
 - Not on the website: news and the assistant (paid model calls), screenshots.
 - [ ] Read-only frontend build

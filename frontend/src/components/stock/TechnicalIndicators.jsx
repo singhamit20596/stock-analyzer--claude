@@ -1,6 +1,7 @@
 import React from 'react';
 import { Activity, Info } from 'lucide-react';
 import { ratio, percent, symbolFor, toneFor, DASH } from './format';
+import { READ_ONLY } from '../../readOnly';
 
 /** RSI on its 0–100 scale with the conventional 30/70 marks drawn in.
  *  The marks are reference levels, not a call — the page states where price
@@ -58,8 +59,9 @@ export default function TechnicalIndicators({ technicals, currency }) {
       </div>
       <p className="text-[11px] text-slate-500 mb-4 flex items-start gap-1.5">
         <Info className="w-3.5 h-3.5 mt-px shrink-0" />
-        These are inputs, not a recommendation. Ask the assistant below to
-        interpret them alongside the news.
+        {READ_ONLY
+          ? 'These are inputs, not a recommendation. The assistant in the laptop app can interpret them alongside the news.'
+          : 'These are inputs, not a recommendation. Ask the assistant below to interpret them alongside the news.'}
       </p>
 
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">

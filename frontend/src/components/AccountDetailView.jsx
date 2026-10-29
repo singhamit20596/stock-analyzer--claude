@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { READ_ONLY } from '../readOnly';
 import { Wallet, TrendingUp, TrendingDown, RefreshCw, Globe, AlertCircle, DollarSign, ArrowRightLeft, Upload, Image, Layers, X, CheckCircle2, PiggyBank, ChevronRight } from 'lucide-react';
 import HoldingChanges from './HoldingChanges';
 
@@ -249,14 +250,14 @@ export default function AccountDetailView({ accounts, onImageOCRUpload, onSelect
           </button>
 
           {/* Update Button — triggers the multi-step modal */}
-          <button
+          {!READ_ONLY && (<button
             onClick={openUpdateModal}
             className="px-3.5 py-2 rounded-xl bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 text-xs font-bold border border-emerald-500/30 shrink-0 flex items-center space-x-1.5 transition-all shadow-md shadow-emerald-500/10"
             title="Update Holdings or Wallet Balance"
           >
             <Upload className="w-4 h-4 text-emerald-400" />
             <span className="hidden sm:inline">Update</span>
-          </button>
+          </button>)}
         </div>
       </div>
 

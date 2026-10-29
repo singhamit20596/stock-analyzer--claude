@@ -1,3 +1,4 @@
+import { READ_ONLY } from '../readOnly';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Tags, Search, X, RefreshCw, Check, Plus, Upload, Trash2,
@@ -393,7 +394,9 @@ export default function ClassificationView({ onSelectStock }) {
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
               Every stock you hold or track, with its market, accounts, sector and section.
-              Edits apply across all accounts and save immediately.
+              {READ_ONLY
+                ? 'Change classifications in the laptop app; they appear here after it publishes.'
+                : 'Edits apply across all accounts and save immediately.'}
             </p>
           </div>
           <div className="flex gap-2">
@@ -403,12 +406,12 @@ export default function ClassificationView({ onSelectStock }) {
             >
               <RefreshCw className="w-3.5 h-3.5" /> Refresh
             </button>
-            <button
+            {!READ_ONLY && (<button
               onClick={() => setShowAdd(true)}
               className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
             >
               <Plus className="w-4 h-4" /> Add More Stocks
-            </button>
+            </button>)}
           </div>
         </div>
       </div>
@@ -506,27 +509,27 @@ export default function ClassificationView({ onSelectStock }) {
                         : <span className="text-indigo-400/80 font-semibold">Watch list</span>}
                     </td>
                     <td className="py-3 px-4">
-                      <select
+                      {READ_ONLY ? <span className="text-xs text-slate-100 font-semibold">{row.sector}</span> : (<select
                         value={row.sector}
                         disabled={busy}
                         onChange={e => update(row, 'sector', e.target.value)}
                         className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-100 font-semibold focus:outline-none focus:border-indigo-500 disabled:opacity-50"
                       >
                         {sectors.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      </select>)}
                     </td>
                     <td className="py-3 px-4">
-                      <select
+                      {READ_ONLY ? <span className="text-xs text-slate-100 font-semibold">{row.section}</span> : (<select
                         value={row.section}
                         disabled={busy}
                         onChange={e => update(row, 'section', e.target.value)}
                         className="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-100 font-semibold focus:outline-none focus:border-indigo-500 disabled:opacity-50"
                       >
                         {sections.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      </select>)}
                     </td>
                     <td className="py-3 px-4 text-right">
-                      {!row.held && (
+                      {!row.held && !READ_ONLY && (
                         <button
                           onClick={() => removeWatch(row)}
                           className="p-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-rose-500/10"

@@ -7,6 +7,7 @@ import AllocationPie from './AllocationPie';
 import PerformanceChart from './PerformanceChart';
 import DailyChangeTable from './DailyChangeTable';
 import PortfolioNews from './PortfolioNews';
+import { READ_ONLY } from '../readOnly';
 
 // Current value summed per distinct value of `key`, for the pie charts.
 function groupBy(rows, key) {
@@ -670,7 +671,7 @@ function PortfolioTableView({ portfolioId, onSelectStock }) {
       {/* Last on the page, after the holdings it reports on. Manually
           triggered — a web search across every holding is slow and costs real
           money, so it runs when asked rather than on page load. */}
-      <PortfolioNews portfolioId={portfolioId} />
+      {!READ_ONLY && <PortfolioNews portfolioId={portfolioId} />}
     </div>
   );
 }
@@ -743,13 +744,13 @@ export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">Create named portfolios from selected accounts. All values in ₹ INR.</p>
           </div>
-          <button
+          {!READ_ONLY && (<button
             onClick={() => { setEditingPortfolio(null); setShowCreator(true); }}
             className="flex items-center space-x-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20 transition-all"
           >
             <Plus className="w-4 h-4" />
             <span>New Portfolio</span>
-          </button>
+          </button>)}
         </div>
 
         {/* Portfolio Tabs */}
@@ -759,7 +760,7 @@ export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
               <div key={p.id} className="flex items-center">
                 <button
                   onClick={() => setSelectedPortfolioId(p.id)}
-                  className={`flex items-center space-x-2 px-4 py-2 rounded-l-xl text-xs font-bold transition-all ${
+                  className={`flex items-center space-x-2 px-4 py-2 ${READ_ONLY ? 'rounded-xl' : 'rounded-l-xl'} text-xs font-bold transition-all ${
                     selectedPortfolioId === p.id
                       ? 'bg-indigo-500 text-white shadow-md shadow-indigo-500/20'
                       : 'bg-slate-800/80 text-slate-300 hover:bg-slate-700 border border-slate-700'
@@ -773,7 +774,7 @@ export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
                     {p.account_count} accts
                   </span>
                 </button>
-                <div className={`flex rounded-r-xl overflow-hidden border-l border-slate-700 ${
+                {!READ_ONLY && (<div className={`flex rounded-r-xl overflow-hidden border-l border-slate-700 ${
                   selectedPortfolioId === p.id ? 'bg-indigo-600' : 'bg-slate-800/80 border border-slate-700 border-l-0'
                 }`}>
                   <button
@@ -790,7 +791,7 @@ export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
-                </div>
+                </div>)}
               </div>
             ))}
           </div>
@@ -805,13 +806,13 @@ export default function ConsolidatedPortfolio({ accounts, onSelectStock }) {
             <h3 className="text-base font-bold text-slate-300">No Portfolios Yet</h3>
             <p className="text-xs text-slate-500 mt-1">Create a named portfolio by combining accounts to see a unified cross-account view.</p>
           </div>
-          <button
+          {!READ_ONLY && (<button
             onClick={() => setShowCreator(true)}
             className="inline-flex items-center space-x-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
           >
             <Plus className="w-4 h-4" />
             <span>Create Your First Portfolio</span>
-          </button>
+          </button>)}
         </div>
       )}
 

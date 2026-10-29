@@ -1,6 +1,7 @@
 import React from 'react';
 import { LayoutDashboard, PieChart, Wallet, History, UserCheck, Tags , Sparkles } from 'lucide-react';
 import UserMenu from './UserMenu';
+import { READ_ONLY } from '../readOnly';
 
 export const NAV_ITEMS = [
   { id: 'chat', label: 'Assistant', icon: Sparkles },
@@ -11,6 +12,10 @@ export const NAV_ITEMS = [
   { id: 'accounts', label: 'Account Management', icon: UserCheck },
   { id: 'logs', label: 'Sync Audit Logs', icon: History },
 ];
+
+// Tabs that only make changes (or call the paid assistant) are laptop-only.
+const LAPTOP_ONLY = new Set(['chat', 'accounts']);
+export const VISIBLE_TABS = NAV_ITEMS.filter((item) => !(READ_ONLY && LAPTOP_ONLY.has(item.id)));
 
 export default function Navbar({ activeTab, setActiveTab, user, viewAs, onViewAs, onLogout }) {
 
@@ -36,7 +41,7 @@ export default function Navbar({ activeTab, setActiveTab, user, viewAs, onViewAs
         {/* Navigation Tabs */}
         <div className="flex items-center gap-3">
         <nav className="flex flex-wrap items-center gap-1 bg-slate-900/60 p-1.5 rounded-xl border border-slate-800">
-          {NAV_ITEMS.map((item) => {
+          {VISIBLE_TABS.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
             return (

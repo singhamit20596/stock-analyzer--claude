@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Eye } from 'lucide-react';
-import Navbar from './components/Navbar';
+import Navbar, { VISIBLE_TABS } from './components/Navbar';
+import { READ_ONLY } from './readOnly';
 import ChatView from './components/ChatView';
 import ConsolidatedPortfolio from './components/ConsolidatedPortfolio';
 import AccountDetailView from './components/AccountDetailView';
@@ -16,7 +17,11 @@ import LoginView from './components/LoginView';
 import * as auth from './auth';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState(() => localStorage.getItem('activeTab') || 'portfolio');
+  const [activeTab, setActiveTab] = useState(() => {
+    const saved = localStorage.getItem('activeTab');
+    // A tab remembered from the laptop app may not exist on the website.
+    return VISIBLE_TABS.some((t) => t.id === saved) ? saved : 'portfolio';
+  });
   const [accounts, setAccounts] = useState([]);
   // null = signed out, undefined = still checking the stored token.
   const [user, setUser] = useState(undefined);
@@ -219,6 +224,8 @@ export default function App() {
         onLogout={handleLogout}
       />
 
+      {READ_ONLY && <PublishedNote />}
+
       {viewingUser && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-2 mb-4">
           <div className="rounded-xl border border-amber-500/30 bg-amber-500/[0.08] px-4 py-2.5
@@ -298,9 +305,31 @@ export default function App() {
           country={stock.country}
           portfolioId={stock.portfolioId}
           onClose={closeStock}
-          onAskAssistant={handleAskAssistant}
+          onAskAssistant={READ_ONLY ? undefined : handleAskAssistant}
         />
       )}
+    </div>
+  );
+}
+
+
+// The website shows what the laptop last published, with live prices on top.
+// Saying when that was is what makes "read-only" trustworthy rather than stale.
+function PublishedNote() {
+  const [publishedAt, setPublishedAt] = useState(null);
+  useEffect(() => {
+    fetch('/api/health').then((r) => r.json()).then((h) => setPublishedAt(h.published_at || null)).catch(() => {});
+  }, []);
+  const when = publishedAt
+    ? new Date(publishedAt).toLocaleString(undefined, { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' })
+    : null;
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 -mt-3 mb-3">
+      <p className="text-[11px] text-slate-500 flex items-center gap-1.5">
+        <Eye className="w-3.5 h-3.5 shrink-0" />
+        Read-only view. Holdings as of the laptop's last publish{when ? ` (${when})` : ''}; prices are live.
+        Imports and edits happen in the laptop app.
+      </p>
     </div>
   );
 }

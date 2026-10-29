@@ -1,3 +1,4 @@
+import { READ_ONLY } from '../readOnly';
 import React, { useState, useEffect, useCallback } from 'react';
 import { Target, Plus, Trash2, Edit2, X, AlertCircle, ArrowRight, Check, ChevronRight } from 'lucide-react';
 
@@ -469,13 +470,13 @@ export default function RebalanceView({ onSelectStock }) {
               Define the shape you want, then compare any portfolio against it.
             </p>
           </div>
-          <button
+          {!READ_ONLY && (<button
             onClick={() => { setEditing(null); setShowEditor(true); }}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 hover:from-indigo-400 hover:to-violet-500 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
           >
             <Plus className="w-4 h-4" />
             <span>New Target</span>
-          </button>
+          </button>)}
         </div>
 
         {meta.targets.length > 0 && (
@@ -490,7 +491,7 @@ export default function RebalanceView({ onSelectStock }) {
                 >
                   {meta.targets.map(t => <option key={t.id} value={t.id}>{t.name}</option>)}
                 </select>
-                {selectedTarget && (
+                {selectedTarget && !READ_ONLY && (
                   <>
                     <button
                       onClick={() => { setEditing(selectedTarget); setShowEditor(true); }}
@@ -540,13 +541,13 @@ export default function RebalanceView({ onSelectStock }) {
               Create a target to describe the India/US split, cash ratio, and sector/section mix you want.
             </p>
           </div>
-          <button
+          {!READ_ONLY && (<button
             onClick={() => setShowEditor(true)}
             className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 text-white text-xs font-bold shadow-lg shadow-indigo-500/20"
           >
             <Plus className="w-4 h-4" />
             <span>Create Your First Target</span>
-          </button>
+          </button>)}
         </div>
       )}
 
