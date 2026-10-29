@@ -25,7 +25,8 @@ test("a tampered file is refused", () => {
 });
 
 test("the placeholder means nothing published yet", () => {
-  const placeholder = JSON.parse(readFileSync(new URL("../data/snapshot.json", import.meta.url), "utf-8"));
+  // What cloud/data/snapshot.json holds before the laptop's first publish.
+  const placeholder = { format: "stocks-analyzer-snapshot", version: 1, empty: true };
   assert.equal(decryptSnapshot(placeholder, undefined), null);
 });
 

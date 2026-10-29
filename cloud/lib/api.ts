@@ -4,6 +4,9 @@
 import { getStore } from "@netlify/blobs";
 import type { Snapshot } from "./snapshot.ts";
 import { authenticate, issueToken, publicUser, resolveToken, users } from "./auth.ts";
+import * as pages from "./pages.ts";
+import { liveQuotes, type Quotes } from "./quotes.ts";
+import { Store } from "./store.ts";
 
 // Failed logins allowed per username in the window, before refusing.
 const MAX_FAILURES = 10;
@@ -36,7 +39,8 @@ async function recordFailure(username: string, recent: number[]) {
   }
 }
 
-export async function handle(req: Request, { snapshot, error }: { snapshot: Snapshot | null; error?: string }, key: string) {
+export async function handle(req: Request, { snapshot, error }: { snapshot: Snapshot | null; error?: string }, key: string,
+                             quotes: Quotes = liveQuotes) {
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
 
   if (path === "/api/health") {
@@ -79,6 +83,9 @@ export async function handle(req: Request, { snapshot, error }: { snapshot: Snap
   const account = resolveToken(snapshot, bearer(req), key);
   if (!account) return detail("Sign in to continue.", 401);
 
+  if (/^\/api\/(chat|portfolios\/[^/]+\/news|stock\/[^/]+\/news)$/.test(path)) {
+    return detail("News and the assistant are only in the laptop app for now.", 403);
+  }
   if (req.method !== "GET" && req.method !== "HEAD") {
     return detail("The website is read-only. Make changes in the laptop app.", 403);
   }
@@ -90,6 +97,64 @@ export async function handle(req: Request, { snapshot, error }: { snapshot: Snap
     return json({ ...publicUser(account), users: others });
   }
 
-  return detail("This part of the app isn't on the website yet.", 501);
+  // main.viewer: an admin may look at another user's data, read-only.
+  const store = new Store(snapshot);
+  const viewAs = req.headers.get("x-view-as");
+  let target = store.user(account.id)!;
+  if (viewAs && viewAs !== account.id) {
+    if (account.role !== "admin") return detail("Only an admin can view other users.", 403);
+    const other = store.user(viewAs);
+    if (!other) return detail("No such user.", 404);
+    target = other;
+  }
+  const ctx: pages.Ctx = { store, quotes, view: { account: store.user(account.id)!, user: target, impersonating: target.id !== account.id } };
+
+  try {
+    const result = await route(ctx, path, new URL(req.url).searchParams);
+    if (result === undefined) return detail("This part of the app isn't on the website yet.", 501);
+    return json(result);
+  } catch (error) {
+    if (error instanceof pages.HttpError) return detail(error.message, error.status);
+    console.error(error);
+    return detail("Something went wrong on the website.", 500);
+  }
 }
 
+/** FastAPI's Query(default, ge, le) for an integer parameter. */
+function intParam(params: URLSearchParams, name: string, fallback: number, min: number, max: number): number {
+  const raw = params.get(name);
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new pages.HttpError(422, `${name} must be a whole number from ${min} to ${max}.`);
+  }
+  return value;
+}
+
+async function route(ctx: pages.Ctx, path: string, params: URLSearchParams): Promise<unknown> {
+  const parts = path.split("/").slice(2).map(decodeURIComponent);   // after "/api"
+  const [a, b, c, ...rest] = parts;
+  if (rest.length) return undefined;
+
+  if (a === "accounts") {
+    if (b === undefined) return pages.listAccounts(ctx);
+    if (c === "detail") return pages.accountDetail(ctx, b);
+    if (c === "changes") return pages.accountChanges(ctx, b, intParam(params, "limit", 100, 1, 500));
+    if (c === "screenshot") throw new pages.HttpError(404, "Screenshots stay on the laptop.");
+  }
+  if (a === "portfolios") {
+    if (b === undefined) return pages.listPortfolios(ctx);
+    if (c === "detail") return pages.portfolioDetail(ctx, b);
+  }
+  if (a === "classification" && b === undefined) return pages.classification(ctx);
+  if (a === "targets") {
+    if (b === undefined) return pages.listTargets(ctx);
+    if (c === "compare") {
+      const portfolioId = params.get("portfolio_id");
+      if (!portfolioId) throw new pages.HttpError(422, "portfolio_id is required.");
+      return pages.compareTargetPage(ctx, b, portfolioId);
+    }
+  }
+  if (a === "sync-logs" && b === undefined) return pages.syncLogs(ctx);
+  return undefined;
+}

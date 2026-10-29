@@ -71,5 +71,13 @@ Work in the `~/stocks-analyzer-netlify` worktree, outside iCloud Drive.
 - [x] Website login: same passwords as the laptop, registration closed, 10 failed
       attempts per username per 15 min, signed 30-day sessions that end when the
       password changes on the laptop (cloud/lib/auth.ts)
-- [ ] Read API ported to TypeScript, diff-tested against the Python
+- [x] Read API batch 1 — accounts, account detail and changes, portfolios,
+      portfolio detail, classification, targets and compare, sync logs. Diff
+      test against the Python on a copy of the real data with fixed prices:
+      33/33 endpoints identical to the last digit (cloud/lib/py.ts reproduces
+      Python's rounding; cloud/lib/store.ts reproduces SQLite's row order).
+      Live prices from TypeScript match the laptop's (45 stocks).
+- [ ] Batch 2 — portfolio history, daily P&L, price moves
+- [ ] Batch 3 — stock deep-dive page and candles
+- Not on the website: news and the assistant (paid model calls), screenshots.
 - [ ] Read-only frontend build
