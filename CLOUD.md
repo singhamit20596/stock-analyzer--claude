@@ -77,7 +77,9 @@ Work in the `~/stocks-analyzer-netlify` worktree, outside iCloud Drive.
       33/33 endpoints identical to the last digit (cloud/lib/py.ts reproduces
       Python's rounding; cloud/lib/store.ts reproduces SQLite's row order).
       Live prices from TypeScript match the laptop's (45 stocks).
-- [ ] Batch 2 — portfolio history, daily P&L, price moves
+- [x] Batch 2 — portfolio history, daily P&L, price moves. Diff test with
+      recorded provider data: 36/36 endpoints identical (all four ranges, 4
+      portfolios). TypeScript fetches match the laptop's for 242 provider calls.
 - [ ] Batch 3 — stock deep-dive page and candles
 - Not on the website: news and the assistant (paid model calls), screenshots.
 - [ ] Read-only frontend build

@@ -6,6 +6,8 @@ import type { Snapshot } from "./snapshot.ts";
 import { authenticate, issueToken, publicUser, resolveToken, users } from "./auth.ts";
 import * as pages from "./pages.ts";
 import { liveQuotes, type Quotes } from "./quotes.ts";
+import * as charts from "./charts.ts";
+import { liveMarket, type Market } from "./market.ts";
 import { Store } from "./store.ts";
 
 // Failed logins allowed per username in the window, before refusing.
@@ -40,7 +42,7 @@ async function recordFailure(username: string, recent: number[]) {
 }
 
 export async function handle(req: Request, { snapshot, error }: { snapshot: Snapshot | null; error?: string }, key: string,
-                             quotes: Quotes = liveQuotes) {
+                             quotes: Quotes = liveQuotes, market: Market = liveMarket) {
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
 
   if (path === "/api/health") {
@@ -107,7 +109,7 @@ export async function handle(req: Request, { snapshot, error }: { snapshot: Snap
     if (!other) return detail("No such user.", 404);
     target = other;
   }
-  const ctx: pages.Ctx = { store, quotes, view: { account: store.user(account.id)!, user: target, impersonating: target.id !== account.id } };
+  const ctx: charts.ChartCtx = { store, quotes, market, view: { account: store.user(account.id)!, user: target, impersonating: target.id !== account.id } };
 
   try {
     const result = await route(ctx, path, new URL(req.url).searchParams);
@@ -131,7 +133,7 @@ function intParam(params: URLSearchParams, name: string, fallback: number, min: 
   return value;
 }
 
-async function route(ctx: pages.Ctx, path: string, params: URLSearchParams): Promise<unknown> {
+async function route(ctx: charts.ChartCtx, path: string, params: URLSearchParams): Promise<unknown> {
   const parts = path.split("/").slice(2).map(decodeURIComponent);   // after "/api"
   const [a, b, c, ...rest] = parts;
   if (rest.length) return undefined;
@@ -145,6 +147,9 @@ async function route(ctx: pages.Ctx, path: string, params: URLSearchParams): Pro
   if (a === "portfolios") {
     if (b === undefined) return pages.listPortfolios(ctx);
     if (c === "detail") return pages.portfolioDetail(ctx, b);
+    if (c === "history") return charts.portfolioHistory(ctx, b, params.get("range") ?? "3mo");
+    if (c === "daily") return charts.portfolioDaily(ctx, b, intParam(params, "limit", 30, 1, 365));
+    if (c === "price-changes") return charts.priceChanges(ctx, b);
   }
   if (a === "classification" && b === undefined) return pages.classification(ctx);
   if (a === "targets") {

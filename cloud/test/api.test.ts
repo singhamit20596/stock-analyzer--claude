@@ -64,7 +64,7 @@ test("status, health, and the not-yet-built pages", async () => {
   assert.deepEqual(await (await call("/api/auth/status")).json(), { has_users: true });
   assert.equal((await (await call("/api/health")).json()).data, "loaded");
   const { token } = await (await login("owner", "correct-horse-1")).json();
-  assert.equal((await call("/api/portfolios/p1/history", authed(token))).status, 501);
+  assert.equal((await call("/api/stock/AAPL/analysis", authed(token))).status, 501);
   assert.deepEqual(await (await call("/api/accounts", authed(token))).json(), []);
   assert.equal((await call("/api/auth/status", {}, { snapshot: null })).status, 503);
 });
