@@ -12,7 +12,7 @@
   publish = "frontend/dist"
 
 [build.environment]
-  # @netlify/database needs Node 22.12+; the laptop's Node 20 never builds this.
+  # Netlify tooling needs Node 22; the laptop's Node 20 never builds this.
   NODE_VERSION = "22"
   # The frontend hides import and edit controls when this is set. The cloud API
   # also refuses every write, so this is presentation, not the safeguard.

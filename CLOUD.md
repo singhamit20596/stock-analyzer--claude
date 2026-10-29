@@ -37,7 +37,7 @@ write access, so it lives outside the repo (public) and outside iCloud Drive.
 
 ## The cloud schema
 
-`netlify/database/migrations/` — applied by Netlify on deploy. Mirrors
+`cloud/schema/` — applied to the cloud database by hand (Netlify Database is not available on this account). Mirrors
 `backend/models.py` column for column, except: timestamps stay TEXT (no
 timezone reinterpretation, the bug class behind the Groww IST fix), no foreign
 keys (integrity is enforced on the laptop), and three cloud-only tables the
@@ -45,7 +45,7 @@ website writes itself: `user_sessions`, `login_attempts`, `publish_state`.
 
 ## Local tooling
 
-The laptop has Node 20; `@netlify/database` and netlify-cli 27 need Node 22+.
+The laptop has Node 20; netlify-cli 27 needs Node 22+.
 `scripts/netlify.sh` runs the CLI under Node 22 via npx without installing
 either system-wide. npm installs hang on this iCloud path, so cloud work is
 staged in `/private/tmp/sa-cloud` the same way the frontend build is.

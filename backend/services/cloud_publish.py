@@ -1,4 +1,4 @@
-"""Mirror this laptop's database into Netlify Database after every change.
+"""Mirror this laptop's database into the cloud Postgres database after every change.
 
 The laptop is the source of truth and the only place anything is written; the
 website (netlify/) is a read-only view of the mirror. Every successful change
@@ -48,7 +48,7 @@ DEBOUNCE_SECONDS = 2.0
 CONNECT_TIMEOUT = 15
 
 # Every table the website reads, and the exact columns, in the cloud schema's
-# order (netlify/database/migrations). user_sessions is deliberately absent:
+# order (cloud/schema/0001_initial_schema.sql). user_sessions is deliberately absent:
 # the website keeps its own logins, and a mirror would sign them all out.
 MIRRORED: Dict[str, tuple] = {
     "users": ("id", "username", "password_hash", "role", "created_at"),
