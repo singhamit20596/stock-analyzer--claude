@@ -15,8 +15,8 @@
 [build.environment]
   # Netlify tooling needs Node 22; the laptop's Node 20 never builds this.
   NODE_VERSION = "22"
-  # The frontend hides import and edit controls when this is set. The cloud API
-  # also refuses every write, so this is presentation, not the safeguard.
+  # Read by the frontend to hide import and edit controls. The cloud API refuses
+  # every write regardless, so this is presentation, not the safeguard.
   VITE_READ_ONLY = "1"
 
 [functions]

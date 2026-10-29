@@ -9,12 +9,12 @@ import { getStore } from "@netlify/blobs";
 import constants from "../generated/constants.json";
 import { resolveQuoteSymbol } from "./quotes.ts";
 
-const BROWSER_HEADERS = {
+export const BROWSER_HEADERS = {
   "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 " +
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
   Accept: "application/json",
 };
-const NASDAQ_HEADERS = { ...BROWSER_HEADERS, Referer: "https://www.nasdaq.com/" };
+export const NASDAQ_HEADERS = { ...BROWSER_HEADERS, Referer: "https://www.nasdaq.com/" };
 const SERIES_TIMEOUT = 12_000;
 const CANDLE_TIMEOUT = 20_000;
 const SERIES_TTL = 6 * 3600_000;
@@ -86,7 +86,7 @@ function pyFloat(text: string): number | null {
 
 const memory = new Map<string, { at: number; value: unknown }>();
 
-async function cached<T>(key: string, ttl: number, isEmpty: (v: T) => boolean, load: () => Promise<T>): Promise<T> {
+export async function cached<T>(key: string, ttl: number, isEmpty: (v: T) => boolean, load: () => Promise<T>): Promise<T> {
   const hit = memory.get(key);
   if (hit && Date.now() - hit.at < ttl) return hit.value as T;
   try {
@@ -105,7 +105,7 @@ async function cached<T>(key: string, ttl: number, isEmpty: (v: T) => boolean, l
   return value;
 }
 
-async function getJson(url: string, headers: Record<string, string>, timeout: number): Promise<any | null> {
+export async function getJson(url: string, headers: Record<string, string>, timeout: number): Promise<any | null> {
   try {
     const response = await fetch(url, { headers, redirect: "follow", signal: AbortSignal.timeout(timeout) });
     if (response.status !== 200) return null;

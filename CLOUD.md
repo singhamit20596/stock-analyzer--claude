@@ -80,6 +80,11 @@ Work in the `~/stocks-analyzer-netlify` worktree, outside iCloud Drive.
 - [x] Batch 2 — portfolio history, daily P&L, price moves. Diff test with
       recorded provider data: 36/36 endpoints identical (all four ranges, 4
       portfolios). TypeScript fetches match the laptop's for 242 provider calls.
-- [ ] Batch 3 — stock deep-dive page and candles
+- [x] Batch 3 — stock deep-dive page and candles. Diff test with recorded
+      provider data: 89/89 endpoints identical (every held stock, ETFs, a
+      stock not held, target tracking, every range). Live fundamentals match
+      the laptop on 138/138 calls apart from intraday volume/high-low/market cap.
+- [ ] Hide import/edit controls in the website build (VITE_READ_ONLY); the API
+      already refuses every write.
 - Not on the website: news and the assistant (paid model calls), screenshots.
 - [ ] Read-only frontend build

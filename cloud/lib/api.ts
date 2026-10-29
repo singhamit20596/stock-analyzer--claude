@@ -8,6 +8,7 @@ import * as pages from "./pages.ts";
 import { liveQuotes, type Quotes } from "./quotes.ts";
 import * as charts from "./charts.ts";
 import { liveMarket, type Market } from "./market.ts";
+import * as stock from "./stock.ts";
 import { Store } from "./store.ts";
 
 // Failed logins allowed per username in the window, before refusing.
@@ -42,7 +43,8 @@ async function recordFailure(username: string, recent: number[]) {
 }
 
 export async function handle(req: Request, { snapshot, error }: { snapshot: Snapshot | null; error?: string }, key: string,
-                             quotes: Quotes = liveQuotes, market: Market = liveMarket) {
+                             quotes: Quotes = liveQuotes, market: Market = liveMarket,
+                             sources: stock.StockSources = stock.liveSources) {
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
 
   if (path === "/api/health") {
@@ -109,7 +111,7 @@ export async function handle(req: Request, { snapshot, error }: { snapshot: Snap
     if (!other) return detail("No such user.", 404);
     target = other;
   }
-  const ctx: charts.ChartCtx = { store, quotes, market, view: { account: store.user(account.id)!, user: target, impersonating: target.id !== account.id } };
+  const ctx: charts.ChartCtx & stock.StockCtx = { store, quotes, market, sources, view: { account: store.user(account.id)!, user: target, impersonating: target.id !== account.id } };
 
   try {
     const result = await route(ctx, path, new URL(req.url).searchParams);
@@ -133,7 +135,7 @@ function intParam(params: URLSearchParams, name: string, fallback: number, min: 
   return value;
 }
 
-async function route(ctx: charts.ChartCtx, path: string, params: URLSearchParams): Promise<unknown> {
+async function route(ctx: charts.ChartCtx & stock.StockCtx, path: string, params: URLSearchParams): Promise<unknown> {
   const parts = path.split("/").slice(2).map(decodeURIComponent);   // after "/api"
   const [a, b, c, ...rest] = parts;
   if (rest.length) return undefined;
@@ -161,5 +163,9 @@ async function route(ctx: charts.ChartCtx, path: string, params: URLSearchParams
     }
   }
   if (a === "sync-logs" && b === undefined) return pages.syncLogs(ctx);
+  if (a === "stock" && b !== undefined) {
+    if (c === "analysis") return stock.stockAnalysis(ctx, b, params);
+    if (c === "candles") return stock.stockCandles(ctx, b, params);
+  }
   return undefined;
 }
