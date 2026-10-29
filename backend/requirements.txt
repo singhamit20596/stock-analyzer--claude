@@ -15,7 +15,6 @@ rapidocr-onnxruntime
 # easyocr alone pulls in PyTorch (~2GB). Install by hand if you ever need them:
 #   pip install easyocr pytesseract
 anthropic
-# Publishes each change to the cloud website. Pure Python on purpose: compiled
-# drivers are painful to install on this iCloud path. Unused until
-# ~/.stocks-analyzer/cloud.env exists.
-pg8000==1.31.2
+# Encrypts the data each change publishes to the cloud website (cloud_publish.py).
+# Unused until ~/.stocks-analyzer/cloud.env exists.
+cryptography==46.0.3

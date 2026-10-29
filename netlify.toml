@@ -2,8 +2,9 @@
 #
 # The laptop app (backend/, started by start.command) is the source of truth
 # and the only place anything is written — imports, OCR, edits. Every change it
-# makes is mirrored into Netlify Database. This site reads that mirror and
-# fetches live prices itself, so it stays current with the laptop switched off.
+# makes is published as an encrypted JSON file (cloud/data/snapshot.json) pushed
+# to this branch, which rebuilds the site. Functions decrypt it with DATA_KEY and
+# fetch live prices themselves, so the site works with the laptop switched off.
 # See CLOUD.md.
 
 [build]

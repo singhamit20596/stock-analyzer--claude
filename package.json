@@ -14,8 +14,6 @@
     "@netlify/functions": "6.0.3"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "0.5.12",
-    "@electric-sql/pglite-socket": "0.2.15",
     "tsx": "4.23.15"
   }
 }

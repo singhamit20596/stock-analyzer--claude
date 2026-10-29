@@ -1,0 +1,50 @@
+{
+  "key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "envelope": {
+    "format": "stocks-analyzer-snapshot",
+    "version": 1,
+    "cipher": "AES-256-GCM",
+    "note": "Encrypted. Readable only with the key held by the laptop and the Netlify site.",
+    "nonce": "2cwh291RzusqUxra",
+    "ciphertext": "3BMUGWvf/3w098j/cNQwK+PUjYje1UmED/lZSdLMo1ts24kfnqJQj6ZqxjujRi3HnsK1FbIkH5ZKr+iww+gasfcpxKazKH9PyRkejKhnBssHBjhqIHIpIq5E8gtKQZa78LZXTlYNNKf0BiDZeH3dF3JnEGU/3uqsfWbuGCB3BhrIpq1B+ypmfoG/T/C6L7ZQ/ZYCO8nYDOwI61Lwwujbg/FwNxxQ16UYDSkQIk3DfSJaPbRfF3IDuhxOBGuCuqcm72sFrt5awH6+1F+xQgYDLV713xnuqtlJ2Hbx1jeEPd+i7nsoT6hlvookyJ1IeJr78EF4HzStdi1zcme+ld9ljMQLyj0TgodoHHqhXFJYl5Ic+nK67xtd0EK/ApdQ6AQWbPT78e8Ln3KFkqWurv9tiHPVYNMLsA/R7Gx7opTg2IfRI+x+eZXxf0v8+nIR1ZGisJrJUqiWVxxlPWs0l0yfUdryiRgfaN1Z058IxAG8xZ6nIe5CLIWfmFrvo46zRN2M0ZC3jcNXKw6hOqeDLEaomMGDupnB1w80iVDQcG/7yaOXoxQ4EQN8f7EA9Vm4mD0agZ3u31mpjPL1eSmioLNEUyEVu4ziR9ixZqTlTnCB9qIePAvNFgNA1lQX3OkgGi7rw5+UzO/pOxp9oc+1oX3wIaKK/KZ9W2Wl5xFnCGKlWoaQkKo4UjKmhViT",
+    "digest": "6fb860acc172ea5fdd5243415067d81f38fda4c057aa22c866ecec8139a0b3dc"
+  },
+  "expected": {
+    "users": [
+      {
+        "id": 1,
+        "username": "test-user",
+        "password_hash": "pbkdf2_sha256$600000$00$00",
+        "role": "admin",
+        "created_at": "2026-08-06 16:43:24.160901"
+      }
+    ],
+    "accounts": [],
+    "holdings": [
+      {
+        "id": 7,
+        "account_id": 2,
+        "symbol": "RELIANCE",
+        "company_name": "Reliance — Ünïcode ₹",
+        "quantity": 12.5,
+        "avg_buy_price": 1234.5678901234,
+        "current_price": null,
+        "is_user_verified": 1,
+        "updated_at": "2026-10-29 11:00:00",
+        "country": "IND",
+        "currency": "INR",
+        "sector": "Energy",
+        "section": "Equity",
+        "first_seen_at": "2026-01-01 00:00:00"
+      }
+    ],
+    "holding_changes": [],
+    "portfolios": [],
+    "portfolio_accounts": [],
+    "portfolio_daily_snapshots": [],
+    "target_portfolios": [],
+    "target_rules": [],
+    "watch_stocks": [],
+    "sync_logs": []
+  }
+}
