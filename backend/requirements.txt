@@ -15,3 +15,6 @@ rapidocr-onnxruntime
 # easyocr alone pulls in PyTorch (~2GB). Install by hand if you ever need them:
 #   pip install easyocr pytesseract
 anthropic
+# Encrypts the data each change publishes to the cloud website (cloud_publish.py).
+# Unused until ~/.stocks-analyzer/cloud.env exists.
+cryptography==46.0.3
