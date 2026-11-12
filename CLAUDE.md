@@ -329,3 +329,17 @@ Design decisions from the plan review:
   the deep-dive price chart, where candlesticks with a volume pane and a
   crosshair are not worth hand-rolling.
 - `frontend/dist/` is committed so `start.command` works without npm.
+
+## The website (read-only copy on Netlify)
+
+https://stockview2027.netlify.app is a read-only view of this laptop's data,
+built from the `netlify` branch. After every successful change (POST/PUT/
+PATCH/DELETE) `services/cloud_publish.py` encrypts the mirrored tables and
+pushes `cloud/data/snapshot.json` to that branch on a background thread, a
+couple of seconds later; it also catches up once at startup. A publish can
+never fail or slow a save — errors are recorded and shown by
+`GET /api/cloud/status`; `POST /api/cloud/publish` retries by hand.
+
+It does nothing unless `~/.stocks-analyzer/cloud.env` exists (created by
+`scripts/cloud_setup.sh` on the `netlify` branch). Tests must set
+`STOCKS_CLOUD_CONFIG_DIR` to an empty folder, or they will publish.

@@ -15,6 +15,7 @@ import migrations
 import models
 import schemas
 from database import engine, get_db
+from services import cloud_publish
 from services.deduplicator import AccountDeduplicator
 from services.ocr_engine import PortfolioOCREngine
 from services.portfolio_engine import PortfolioAggregator, account_currency
@@ -70,6 +71,38 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Requests that write nothing the website shows. Publishing after them would be
+# harmless — a mirror is idempotent — but wasteful: chat and news are reads
+# that happen to POST, and login only creates a session, which is never
+# mirrored. Registration is absent on purpose: a new user must reach the cloud.
+_NOT_A_CHANGE = (
+    "/api/auth/login", "/api/auth/logout", "/api/chat",
+    "/api/classification/resolve", "/api/cloud/",
+)
+
+
+@app.middleware("http")
+async def _publish_after_change(request, call_next):
+    """Every successful change here is mirrored to the cloud website.
+
+    Runs after the response is produced and only schedules the work, so a slow
+    or unreachable cloud can never delay or fail the save itself — the laptop
+    stays the source of truth, and publishing catches up later.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if (request.method in ("POST", "PUT", "PATCH", "DELETE")
+            and 200 <= response.status_code < 300
+            and not path.startswith(_NOT_A_CHANGE)
+            and not path.endswith("/news")):
+        cloud_publish.request_publish(f"{request.method} {path}")
+    return response
+
+
+# Anything that failed to publish while offline, or any change made to the
+# database by hand, reaches the cloud the next time the app starts.
+cloud_publish.catch_up_on_start()
 
 
 def _utcnow() -> datetime:
@@ -1573,6 +1606,19 @@ def compare_target(target_id: str, portfolio_id: str, db: Session = Depends(get_
     result["portfolio_id"] = portfolio_id
     result["portfolio_name"] = detail["portfolio_name"]
     return result
+
+
+@app.get("/api/cloud/status")
+def cloud_status(view: Viewer = Depends(viewer)):
+    """Whether the cloud website is current with this laptop."""
+    return cloud_publish.status()
+
+
+@app.post("/api/cloud/publish")
+def cloud_publish_now(view: Viewer = Depends(viewer)):
+    """Publish immediately, waiting for the result — the manual escape hatch
+    when the automatic publish has been failing and you want to see why."""
+    return cloud_publish.publish_now("manual")
 
 
 @app.get("/api/sync-logs")
